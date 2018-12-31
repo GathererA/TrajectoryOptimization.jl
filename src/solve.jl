@@ -83,6 +83,7 @@ function _solve(solver::Solver{Obj}, U0::Array{Float64,2}, X0::Array{Float64,2}=
 
     ## Unpack model, objective, and solver parameters
     n,m,N = get_sizes(solver)
+    m̄,mm = get_num_controls(solver)
 
     # Check for minimum time solve
     # is_min_time(solver) ? solver.opts.minimum_time = true : solver.opts.minimum_time = false
