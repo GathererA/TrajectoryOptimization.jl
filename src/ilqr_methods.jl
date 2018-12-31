@@ -217,6 +217,10 @@ function stage_cost(x,u,Q::AbstractArray{Float64,2},R::AbstractArray{Float64,2},
     0.5*(x - xf)'*Q*(x - xf) + 0.5*u'*R*u + c
 end
 
+function stage_cost_sat_att(x,u,Q::AbstractArray{Float64,2},R::AbstractArray{Float64,2},xf::Vector{Float64},c::Float64=0)::Union{Float64,ForwardDiff.Dual}
+    0.5*(x[1:9] - xf[1:9])'*Q[1:9,1:9]*(x[1:9] - xf[1:9]) + 0.5*u'*R*u + 1-(x[10:13]'*xf[10:13])
+end
+
 function stage_cost(obj::Objective, x::Vector, u::Vector)::Float64
     0.5*(x - obj.xf)'*obj.Q*(x - obj.xf) + 0.5*u'*obj.R*u + obj.c
 end
@@ -232,6 +236,36 @@ Compute the unconstrained cost
 """
 function cost(solver::Solver,vars::DircolVars)
     cost(solver,vars.X,vars.U)
+end
+
+function _cost_sat_att(solver::Solver,res::SolverVectorResults,X=res.X,U=res.U)
+    # pull out solver/objective values
+    n,m,N = get_sizes(solver)
+    m̄,mm = get_num_controls(solver)
+    obj = solver.obj
+    Q = obj.Q; R = obj.R; xf::Vector{Float64} = obj.xf; Qf::Matrix{Float64} = obj.Qf
+    dt = solver.dt
+
+    J = 0.0
+    for k = 1:N-1
+        solver.opts.minimum_time ? dt = U[k][m̄]^2 : nothing
+        if solver.control_integration == :foh
+            xm = res.xm[k]
+            um = res.um[k]
+            J += dt*(1/6*ℓ(X[k],U[k][1:m],Q,R,xf) + 4/6*ℓ(xm,um[1:m],Q,R,xf) + 1/6*ℓ(X[k+1],U[k+1][1:m],Q,R,xf)) # Simpson quadrature (integral approximation) for foh stage cost
+            solver.opts.minimum_time ? J += solver.opts.R_minimum_time*dt : nothing
+            solver.opts.infeasible ? J += 0.5*solver.opts.R_infeasible*U[k][m̄.+(1:n)]'*U[k][m̄.+(1:n)] : nothing
+        else
+            J += dt*stage_cost_sat_att(X[k],U[k],Q,getR(solver),xf,obj.c)
+            # J += dt*ℓ(X[k],U[k][1:m],Q,R,xf)
+            # solver.opts.minimum_time ? J += solver.opts.R_minimum_time*dt : nothing
+            # solver.opts.infeasible ? J += 0.5*solver.opts.R_infeasible*U[k][m̄.+(1:n)]'*U[k][m̄.+(1:n)] : nothing
+        end
+    end
+
+    J += 0.5*(X[N] - xf)'*Qf*(X[N] - xf)
+
+    return J
 end
 
 function _cost(solver::Solver,res::SolverVectorResults,X=res.X,U=res.U)
@@ -287,7 +321,12 @@ end
 
 
 function cost(solver::Solver, res::SolverIterResults, X=res.X, U=res.U)
+if solver.opts.sat_att=false
     _cost(solver,res,X,U) + cost_constraints(solver,res)
+elseif solver.opts.sat_att=true
+    _cost_sat_att(solver.res,X,U) + cost_constraints(solver,res)
+else
+    print("Could not resolve sat_att Boolean")
 end
 
 """
