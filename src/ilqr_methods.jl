@@ -218,7 +218,7 @@ function stage_cost(x,u,Q::AbstractArray{Float64,2},R::AbstractArray{Float64,2},
 end
 
 function stage_cost_sat_att(x,u,Q::AbstractArray{Float64,2},R::AbstractArray{Float64,2},xf::Vector{Float64},c::Float64=0)::Union{Float64,ForwardDiff.Dual}
-    0.5*(x[1:9] - xf[1:9])'*Q[1:9,1:9]*(x[1:9] - xf[1:9]) + 0.5*u'*R*u + Q[10,10]*-(xf[10:13]'*x[10:13])
+    0.5*(x[1:3] - xf[1:3])'*Q[1:3,1:3]*(x[1:3] - xf[1:3]) + 0.5*u'*R*u + Q[4,4]*-(xf[4:7]'*x[4:7])
 end
 
 function stage_cost(obj::Objective, x::Vector, u::Vector)::Float64

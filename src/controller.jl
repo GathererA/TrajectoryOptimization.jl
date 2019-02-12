@@ -173,7 +173,7 @@ end
 @(SIGNATURES)
     Simulate LQR controller
 """
-function simulate_controller(f::Function,integration::Symbol,controller::Function,n::Int64,m::Int64,dt::Float64,x0::AbstractVector,tf::Float64,u_min=-Inf,u_max=Inf)
+function simulate_controller(f!::Function,integration::Symbol,controller::Function,n::Int64,m::Int64,dt::Float64,x0::AbstractVector,tf::Float64,u_min=-Inf,u_max=Inf)
     t_sim = 0:dt:tf
     N_sim = length(t_sim)
     if integration == :ode45
@@ -193,7 +193,7 @@ function simulate_controller(f::Function,integration::Symbol,controller::Functio
     else
         # Discrete dynamics
         discretizer = eval(integration)
-        fd = discretizer(f, dt)
+        fd! = discretizer(f!, dt)
 
         # determine number of knot points for simulation
         N_sim = convert(Int64,floor(tf/dt))+1
