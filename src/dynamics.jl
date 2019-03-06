@@ -1,6 +1,6 @@
 module Dynamics
 
-using TrajectoryOptimization: Model, UnconstrainedObjective, ConstrainedObjective
+using TrajectoryOptimization: Model, UnconstrainedObjective, ConstrainedObjective, LQRObjective, Trajectory
 using RigidBodyDynamics
 using LinearAlgebra
 
@@ -18,6 +18,7 @@ include("../dynamics/ballonbeam.jl")
 include("../dynamics/cartpole.jl")
 include("../dynamics/dubinscar.jl")
 include("../dynamics/quadrotor.jl")
-include("../dynamics/quadrotor_euler.jl")
+include("../dynamics/kuka.jl")
+include("../dynamics/double_integrator.jl")
 
 end

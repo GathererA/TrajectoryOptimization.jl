@@ -4,7 +4,8 @@
 .ipynb_checkpoints
 .vscode
 deps/deps.jl
-.out
+*.out
 *.DS_Store
 ipopt.opt
 ipopt.out
+temp/

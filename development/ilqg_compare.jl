@@ -13,11 +13,11 @@ tf = 5.0
 x0 = [0.0; 0.0]
 xf = [pi; 0.0]
 
-obj = UnconstrainedObjective(Q,R,Qf,tf,x0,xf)
+obj = LQRObjective(Q,R,Qf,tf,x0,xf)
 
 opts = SolverOptions()
 opts.cost_tolerance = 1e-5
-opts.gradient_tolerance = 1e-5
+opts.gradient_norm_tolerance = 1e-5
 opts.verbose = true
 opts.cache = true
 opts.c2 = 100.0
@@ -41,11 +41,11 @@ tf = 5.0
 x0 = [0.0; 0.0; 0.0; 0.0]
 xf = [0.0; pi; 0.0; 0.0]
 
-obj = UnconstrainedObjective(Q,R,Qf,tf,x0,xf)
+obj = LQRObjective(Q,R,Qf,tf,x0,xf)
 
 opts = SolverOptions()
 opts.cost_tolerance = 1e-5
-opts.gradient_tolerance = 1e-5
+opts.gradient_norm_tolerance = 1e-5
 opts.verbose = true
 opts.cache = true
 

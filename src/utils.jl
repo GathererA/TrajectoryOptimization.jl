@@ -1,8 +1,9 @@
-import Base: convert, copyto!, Array
+import Base: convert, copyto!, Array, vec
 import LinearAlgebra: norm
+import Plots: plot, plot!
 
 function get_cost_matrices(solver::Solver)
-    solver.obj.Q, solver.obj.R, solver.obj.Qf, solver.obj.xf
+    solver.obj.cost.Q, solver.obj.cost.R, solver.obj.cost.Qf
 end
 
 function get_sizes(solver::Solver)
@@ -64,6 +65,14 @@ function norm2(X::Union{Vector{MVector{S,Float64}} where S, Vector{Vector{Float6
     v
 end
 
+function norm2(x::Vector{Real})
+    v = 0.
+    for val in x
+        v += val^2
+    end
+    return v
+end
+
 function to_array(X::Vector{Vector{Float64}})
     N = length(X)
     n = length(X[1])
@@ -105,13 +114,18 @@ function to_array(A::Vector{D} where {D<:Diagonal})
     return B
 end
 
-function to_dvecs(X::Array)
+function vec(A::Trajectory)
+	vec(to_array(A))
+end
+
+
+function to_dvecs(X::AbstractArray)
     N = size(X)[end]
     ax = axes(X)[1:end-1]
     [X[ax...,i] for i = 1:N]
 end
 
-function to_svecs(X::Array)
+function to_svecs(X::AbstractArray)
     N = size(X)[end]
     s = size(X)[1:end-1]
     ax = axes(X)[1:end-1]
@@ -211,41 +225,6 @@ function print_solver(solver::Solver,name::String,io::IO=STDOUT)
 
 end
 
-# """
-# $(SIGNATURES)
-# Checks if Snopt.jl is installed and the SNOPT library has been built.
-# Does not check if Snopt.jl runs, only that the necessary files are there.
-# NOTE: Snopt.jl does not currently support Windows.
-# """
-# function check_snopt_installation()::Bool
-#     if is_windows()
-#         return false
-#     end
-#     snopt_dir = Pkg.dir("Snopt")
-#     if isdir(snopt_dir)
-#         if isfile(joinpath(snopt_dir),"deps","src","libsnopt.so")
-#             return true
-#         end
-#     end
-#     return false
-# end
-
-"""
-$(SIGNATURES)
-Circle constraint function (c ⩽ 0, negative is satisfying constraint)
-"""
-function circle_constraint(x,x0,y0,r)
-	return -((x[1]-x0)^2 + (x[2]-y0)^2  - r^2)
-end
-
-"""
-$(SIGNATURES)
-Sphere constraint function (c ⩽ 0, negative is satisfying constraint)
-"""
-function sphere_constraint(x,x0,y0,z0,r)
-	return -((x[1]-x0)^2 + (x[2]-y0)^2 + (x[3]-z0)^2  - r^2)
-end
-
 """
 $(SIGNATURES)
 Generate random circle constraints
@@ -303,13 +282,18 @@ function plot_obstacles(circles,clr=:red)
     end
 end
 
-function plot_trajectory!(X;kwargs...)
+function plot_trajectory!(X::AbstractMatrix;kwargs...)
     plot!(X[1,:],X[2,:];kwargs...)
 end
 
-function plot_trajectory!(res::SolverVectorResults; kwargs...)
+function plot_trajectory!(res::TrajectoryOptimization.SolverVectorResults; kwargs...)
 	plot_trajectory!(to_array(res.X); kwargs...)
 end
+
+function plot_trajectory!(res::DircolVars;kwargs...)
+    plot_trajectory!(res.X; kwargs...)
+end
+
 
 """
 $(SIGNATURES)
@@ -332,3 +316,55 @@ function quat2rot(q)
 
       R = Matrix{Float64}(I,3,3) + 2*hat(v)*(hat(v) + s.*Matrix{Float64}(I,3,3))
 end
+
+
+function ispossemidef(A)
+	eigs = eigvals(A)
+	if any(real(eigs) .< 0)
+		return false
+	else
+		return true
+	end
+end
+
+
+function convergence_rate(stats::Dict;tail::Float64=0.5,plot_fit=false)
+    total_iters = stats["iterations"]
+    start = Int(ceil((1-tail)*total_iters))
+    iters = collect(start:total_iters)
+    grad = stats["gradient_norm"][iters]
+    coeffs = convergence_rate(iters,grad)
+    if plot_fit
+        x = log.(1:total_iters)
+        p = plot(x,log.(stats["gradient_norm"]),xlabel="iterations (log)",ylabel="gradient (log)")
+        line = @. coeffs[2]*x + coeffs[1]
+        plot!(x,line)
+        ylim = collect(ylims(p))
+        plot_vertical_lines!(log.(stats["outer_updates"]),ylim,linecolor=:black,linestyle=:dash,label="")
+        display(p)
+    end
+    return coeffs[2]
+end
+
+function convergence_rate(x::Vector,y::Vector)
+    n = length(x)
+    X = [ones(n) log.(x)]
+    coeffs = X\log.(y)
+    return coeffs
+end
+
+function plot_vertical_lines!(p::Plots.Plot,x::Vector; kwargs...)
+	ylim = collect(ylims(p))
+	plot_vertical_lines!(x, ylim; kwargs...)
+end
+
+function plot_vertical_lines!(x,ylim=[-100,100]; kwargs...)
+    ys = [ylim for val in x]
+    xs = [[val; val] for val in x]
+    plot!(xs,ys, linestyle=:dash, color=:black, label=""; kwargs...)
+end
+
+
+plot(X::Trajectory; kwargs...) = plot(to_array(X)'; kwargs...)
+plot!(X::Trajectory; kwargs...) = plot!(to_array(X)'; kwargs...)
+plot(X::Trajectory, inds::UnitRange; kwargs...) = plot(to_array(X)[inds,:]'; kwargs...)

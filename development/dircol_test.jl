@@ -5,27 +5,71 @@ using Test
 model, obj0 = Dynamics.cartpole_analytical
 n,m = model.n, model.m
 
-obj = copy(obj0)
-obj.x0 = [0;0;0;0.]
-obj.xf = [0.5;pi;0;0]
-obj.tf = 2.
+Q = copy(obj0.cost.Q)
+R = copy(obj0.cost.R)
+Qf = copy(obj0.cost.Qf)
+
+x0 = [0;0;0;0.]
+xf = [0.5;pi;0;0]
+tf = 2.
 u_bnd = 50
 x_bnd = [0.6,Inf,Inf,Inf]
+obj = LQRObjective(Q, R, Qf, tf, x0, xf)
 obj_con = ConstrainedObjective(obj,u_min=-u_bnd, u_max=u_bnd, x_min=-x_bnd, x_max=x_bnd)
 obj_con = ConstrainedObjective(obj,u_min=-u_bnd, u_max=u_bnd)
-obj_mintime = update_objective(obj_con,tf=:min,Q=obj.Q*0,Qf=obj.Qf,R=obj.R*0.001)
+cost_mintime = LQRCost(Q*0,R*0.001,Qf,xf)
+obj_mintime = update_objective(obj_con,cost=cost_mintime,tf=:min)
 dt = 0.05
 
 
 # Check Jacobians
 method = :hermite_simpson
-solver = Solver(model,ConstrainedObjective(obj),dt=dt,integration=:rk3_foh)
+solver = Solver(model,ConstrainedObjective(obj),N=101,integration=:rk3)
 N = solver.N
 NN = (n+m)N
 nG, = get_nG(solver,method)
 U0 = ones(1,N)*1
 X0 = line_trajectory(obj.x0, obj.xf, N)
-solver.opts.verbose = true
+Z0 = packZ(X0,U0)
+
+eval_f, eval_g, eval_grad_f, eval_jac_g = gen_usrfun_ipopt(solver,method)
+x_L, x_U, g_L, g_U = get_bounds(solver,method)
+P = length(g_L)  # Total number of constraints
+
+g = zeros(P)
+grad_f = zeros(NN)
+rows = zeros(nG)
+cols = zeros(nG)
+vals = zeros(nG)
+
+reset_evals(solver)
+eval_f(Z0)
+evals(solver,:f)
+
+reset_evals(solver)
+eval_g(Z0,g)
+evals(solver,:f)
+evals(solver,:c)
+
+reset_evals(solver)
+eval_grad_f(Z0,grad_f)
+evals(solver,:f)
+evals(solver,:Fc)
+
+reset_evals(solver)
+eval_jac_g(Z0,:Structure,rows,cols,vals)
+evals(solver,:f)
+evals(solver,:Fc)
+evals(solver,:c)
+eval_jac_g(Z0,:vals,rows,cols,vals)
+evals(solver,:f)
+evals(solver,:Fc)
+evals(solver,:c)
+
+grad_f == grad_f2
+grad_f2 = copy(grad_f)
+
+solver.opts.verbose = false
 sol,stats = solve_dircol(solver,X0,U0, method=method)
 @test norm(sol.X[:,end] - obj.xf) < 1e-6
 plot(sol.X')
@@ -53,7 +97,7 @@ function check_grads(solver,method)
 
     function eval_ceq(Z)
         X,U = TrajectoryOptimization.unpackZ(Z,(n,m,N))
-        TrajectoryOptimization.collocation_constraints(X,U,method,solver.dt,solver.fc)
+        TrajectoryOptimization.collocation_constraints(X,U,method,solver.dt,solver.model.f)
     end
 
     function eval_f(Z)
@@ -100,7 +144,7 @@ check_grads(solver,:hermite_simpson_separated)
 
 
 # Minimum time
-method = :hermite_simpson
+method = :hermite_simpsonj
 # Set up problem
 solver = Solver(model,obj_mintime,N=51,integration=:rk3_foh)
 N,N_ = TrajectoryOptimization.get_N(solver,method)
@@ -134,6 +178,7 @@ J = cost(solver::Solver,X0,U0,weights::Vector,method::Symbol)
 
 # Cost Gradient
 eval_grad_f(Z,grad_f)
+grad_f
 grad_f_check = ForwardDiff.gradient(eval_f,Z)
 @test grad_f_check ≈ grad_f
 
@@ -192,22 +237,24 @@ t1 = @elapsed sol,stats = solve_dircol(solver)
 
 # Test dircol constraint stuff
 n,m = 3,2
-cE(x,u) = [2x[1:2]+u;
-          x'x + 5]
+cE!(c,x,u) = begin c[1:2] = 2x[1:2]+u; c[3] = x'x + 5 end
 pE = 3
-cE(x) = [cos(x[1]) + x[2]*x[3]; x[1]*x[2]^2]
+cE!(c,x) = begin c[1] = cos(x[1]) + x[2]*x[3]; c[2] = x[1]*x[2]^2 end
 pE_N = 2
-cI(x,u) = [x[3]-x[2]; u[1]*x[1]]
+cI!(c,x,u) = begin c[1] = x[3]-x[2]; c[2] = u[1]*x[1] end
 pI = 2
 pI_N = 0
 
+x = rand(n); u = rand(m);
+c = zeros(3)
+cI!(c,x,u)
+is_inplace_function(cE!,x,u)
 model, obj = Dynamics.dubinscar
-obj.tf = 3
-obj_con = ConstrainedObjective(obj,cE=cE,cI=cI)
+obj_con = ConstrainedObjective(obj,cE=cE!,cI=cI!,cE_N=cE!,use_xf_equality_constraint=false,tf=3)
 @test obj_con.p == pE + pI
 @test obj_con.pI == pI
 @test obj_con.pI_N == pI_N
-@test obj_con.p_N == n + pE_N + pI_N
+@test obj_con.p_N == pE_N + pI_N
 
 method = :trapezoid
 solver = Solver(model,obj_con,dt=1.)
@@ -219,15 +266,13 @@ U = [0. 1 0 0; -1 0 -1 0]
 # X = line_trajectory(obj.x0,obj.xf,N)
 x,u = X[:,1],U[:,1]
 c = zeros(3)
-cE! = wrap_inplace(cE)
-@test !is_inplace_constraints(cE,n,m)
-@test is_inplace_constraints(cE!,n,m)
-@test (n,m) == count_inplace_output(cE!,n,m)
+@test is_inplace_function(cE!,x,u)
+@test 3 == count_inplace_output(cE!,x,u)
 
 # Constraint function
 pI_obj, pE_obj = TrajectoryOptimization.count_constraints(obj_con)
 @test pI_obj == (pI, pI, 0, 0)
-@test pE_obj == (pE, pE, pE_N+n, pE_N)
+@test pE_obj == (pE, pE, pE_N, pE_N)
 p_total = (pE + pI)*(N-1) + pE_N + pI_N
 p_colloc = (N-1)n
 
@@ -235,6 +280,9 @@ c_fun!, jac_c = TrajectoryOptimization.gen_custom_constraint_fun(solver, method)
 C = zeros(p_total)
 c_fun!(C,X,U)
 Z = packZ(X,U)
+cE(x,u) = begin c=zeros(3); cE!(c,x,u); return c end
+cE(x) = begin c=zeros(2); cE!(c,x); return c end
+cI(x,u) = begin c=zeros(2); cI!(c,x,u); return c end
 C_expected = [cE(X[:,1],U[:,1]);
               cE(X[:,2],U[:,2]);
               cE(X[:,3],U[:,3]);

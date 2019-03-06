@@ -1,3 +1,5 @@
+# import TrajectoryOptimization
+include("N_plots.jl")
 
 # Read in the system
 model,obj = Dynamics.pendulum!
@@ -32,10 +34,22 @@ N_truth = Int(obj.tf / dt_truth + 1)
 opts = SolverOptions()
 opts.use_static = false
 opts.cost_tolerance = 1e-4
-opts.outer_loop_update = :default
+opts.outer_loop_update_type = :default
 opts.iterations = 500
 
 group  = "pendulum/unconstrained"
+solver = Solver(model, obj, N=N)
+res, stats = solve(solver, U0)
+
+solver.state.constrained
+using Juno, Profile
+Profile.init(n = 10^7, delay = 0.01)
+@profile solve_dircol(solver,X0_rollout,U0)
+Juno.profiler()
+res_d, stats_d  = solve_dircol(solver,X0,U0)
+
+
+
 solver_truth, res_truth,  = run_dircol_truth(model, obj, dt_truth, X0_rollout, U0, group)
 time_truth = get_time(solver_truth)
 plot(time_truth, res_truth.X')
@@ -58,11 +72,11 @@ plot_stat("iterations",group)
 #####################################
 opts = SolverOptions()
 opts.cost_tolerance = 1e-4
-opts.cost_intermediate_tolerance = 1e-4
+opts.cost_tolerance_intermediate = 1e-4
 opts.constraint_tolerance = 1e-3
-opts.outer_loop_update = :individual
+opts.outer_loop_update_type = :individual
 opts.use_static = false
-opts.τ = .25
+opts.constraint_decrease_ratio = .25
 
 group = "pendulum/constrained"
 solver_truth, res_truth,  = run_dircol_truth(model, obj_c, dt_truth, X0_rollout, U0, group)
@@ -86,7 +100,7 @@ plot_stat("c_max",group,yscale=:log10)
 
 opts = SolverOptions()
 opts.cost_tolerance = 1e-16
-opts.cost_intermediate_tolerance = 1e-16
+opts.cost_tolerance_intermediate = 1e-16
 opts.constraint_tolerance = 1e-16
 opts.use_static = false
 opts.iterations = 250
@@ -101,10 +115,10 @@ solver = solver(model, obj_c, opts=opts, N=51, integration=:rk3)
 # Solver Options
 opts = SolverOptions()
 opts.cost_tolerance = 1e-4
-opts.cost_intermediate_tolerance = 1e-1
+opts.cost_tolerance_intermediate = 1e-1
 opts.constraint_tolerance = 1e-3
-opts.outer_loop_update = :individual
-opts.τ = .25
+opts.outer_loop_update_type = :individual
+opts.constraint_decrease_ratio = .25
 opts.use_static = false
 opts.resolve_feasible = false
 
@@ -132,5 +146,5 @@ solver = Solver(model, obj_c, opts=opts, N=51, integration=:rk3_foh)
 disable_logging(Logging.Debug)
 solver.opts.verbose = true
 solver.opts.live_plotting = true
-solver.opts.cost_intermediate_tolerance = 1e-6
+solver.opts.cost_tolerance_intermediate = 1e-6
 solve(solver,X0,U0)

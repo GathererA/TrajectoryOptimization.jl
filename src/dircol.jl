@@ -20,11 +20,14 @@ Solve a trajectory optimization problem with direct collocation
     :quadratic - uses functions exploiting quadratic cost functions
 """
 function solve_dircol(solver::Solver,X0::Matrix,U0::Matrix;
-        nlp::Symbol=:ipopt, method::Symbol=:auto, grads::Symbol=:quadratic, start=:cold)
+        nlp::Symbol=:ipopt, method::Symbol=:auto, grads::Symbol=:quadratic, start=:cold, options::Dict{String,T}=Dict{String,Any}()) where T
 
     if solver.obj isa UnconstrainedObjective
         solver = Solver(solver,obj=ConstrainedObjective(solver.obj))
+        # solver.state.constrained = false
     end
+
+    reset_evals(solver)
 
     obj = solver.obj
     model = solver.model
@@ -49,7 +52,7 @@ function solve_dircol(solver::Solver,X0::Matrix,U0::Matrix;
     N = convert_N(N,method)
 
     if N != size(X0,2)
-        solver.opts.verbose ? println("Interpolating initial guess") : nothing
+        @info "Interpolating initial guess"
         X0,U0 = interp_traj(N,obj.tf,X0,U0)
     end
 
@@ -58,7 +61,7 @@ function solve_dircol(solver::Solver,X0::Matrix,U0::Matrix;
     end
 
     if nlp == :ipopt
-        return solve_ipopt(solver,X0,U0,method)
+        return solve_ipopt(solver,X0,U0,method,options=options)
     elseif nlp == :snopt
         return solve_snopt(solver,X0,U0, method=method, grads=grads, start=start)
     else
@@ -162,8 +165,8 @@ function gen_custom_constraint_fun(solver::Solver,method)
     end
 
     # Jacobian
-    jac_cI = generate_general_constraint_jacobian(obj.cI, pI_c, pI_N_c, n, m)
-    jac_cE = generate_general_constraint_jacobian(obj.cE, pE_c, pE_N_c, n, m)
+    jac_cI = generate_general_constraint_jacobian(obj.cI, pI_c, n, m)
+    jac_cE = generate_general_constraint_jacobian(obj.cE, pE_c, n, m)
 
     function jacobian_block!(vals, jac::Function, x, u, p::Int)
         blk = reshape(vals,p,n+m̄)
@@ -269,7 +272,7 @@ function get_bounds(solver::Solver,method::Symbol)
     x_U[n.+(1:m),:] .= obj.u_max
 
     # Minimum time bounds
-    if solver.opts.minimum_time
+    if solver.state.minimum_time
         x_L[n+m̄,:] .= solver.opts.min_dt
         x_U[n+m̄,:] .= solver.opts.max_dt
         p_dt = N-2
@@ -320,10 +323,23 @@ Z = [X1,U1,X2,U2,..,] (all transposed)
 function packZ(X,U)
     n, N = size(X)
     m = size(U,1)
-    Z = zeros(n+m,N)
-    Z[1:n,:] .= X
-    Z[n+1:end,1:end] .= U
-    Z = vec(Z)
+    Nx = length(X)
+    Nu = length(U)
+    Nz = Nx+Nu
+
+    if size(X,2) == size(U,2)
+        Z = zeros(n+m,N)
+        Z[1:n,:] = X
+        Z[1+n:n+m,:] = U
+        Z = vec(Z)
+    else
+        Z = zeros(Nz)
+        Z_k = reshape(view(Z,1:Nz-n),n+m,N-1)
+        Z_k[1:n,:] = X[:,1:N-1]
+        Z_k[1+n:n+m,:] = U[:,1:N-1]
+        Z[Nz-n+1:Nz] = X[:,N]
+    end
+    return Z
 end
 
 function unpackZ(Z, sze)
@@ -335,7 +351,7 @@ function unpackZ(Z, sze)
 end
 
 function get_initial_state(obj::Objective, N::Int)
-    n = size(obj.Q,1); m = size(obj.R,1)
+    n,m = get_sizes(obj)
     X0 = line_trajectory(obj.x0, obj.xf, N)
     U0 = zeros(m,N)
     return X0, U0
@@ -357,7 +373,7 @@ function cost(solver::Solver,X::AbstractMatrix,U::AbstractMatrix,method::Symbol)
     n,m = get_sizes(solver)
     m̄, = get_num_controls(solver)
     obj = solver.obj
-    Q = obj.Q; R = obj.R; xf::Vector{Float64} = obj.xf; Qf::Matrix{Float64} = obj.Qf
+    Q = obj.cost.Q; R = obj.cost.R; xf::Vector{Float64} = obj.xf; Qf::Matrix{Float64} = obj.cost.Qf
     dt = solver.dt
 
     J = 0.0
@@ -367,27 +383,27 @@ function cost(solver::Solver,X::AbstractMatrix,U::AbstractMatrix,method::Symbol)
         Uk = view(U,:,1:2:N_)
         Xm = view(X,:,2:2:N_-1)
         Um = view(U,:,2:2:N_-1)
-        solver.opts.minimum_time ? dt = view(U,m̄,1:2:N_) : dt = ones(N)*solver.dt
+        solver.state.minimum_time ? dt = view(U,m̄,1:2:N_) : dt = ones(N)*solver.dt
 
         for k = 1:nSeg
              # Simpson quadrature (integral approximation) for foh stage cost
-            J += dt[k]/6*(ℓ(Xk[:,k],Uk[1:m,k],Q,R,xf) + 4ℓ(Xm[:,k],Um[1:m,k],Q,R,xf) + ℓ(Xk[:,k+1],Uk[1:m,k+1],Q,R,xf))
-            solver.opts.minimum_time ? J += solver.opts.R_minimum_time*dt[k] : nothing
+            J += dt[k]/6*(stage_cost(obj.cost,Xk[:,k],Uk[1:m,k]) + 4stage_cost(obj.cost,Xm[:,k],Um[1:m,k]) + stage_cost(obj.cost,Xk[:,k+1],Uk[1:m,k+1]))
+            solver.state.minimum_time ? J += solver.opts.R_minimum_time*dt[k] : nothing
         end
     elseif method == :midpoint
-        solver.opts.minimum_time ? dt = view(U,m̄,1:2:N_) : dt = ones(N)*solver.dt
+        solver.state.minimum_time ? dt = view(U,m̄,1:2:N_) : dt = ones(N)*solver.dt
         for k = 1:N-1
-            J += dt[k]*stage_cost(X[:,k],U[1:m,k],Q,R,xf,obj.c)
+            J += dt[k]*stage_cost(obj.cost,X[:,k],U[1:m,k])
         end
     elseif method == :trapezoid
-        solver.opts.minimum_time ? dt = view(U,m̄,1:2:N_) : dt = ones(N)*solver.dt
+        solver.state.minimum_time ? dt = view(U,m̄,1:2:N_) : dt = ones(N)*solver.dt
         for k = 1:N-1
-            J += dt[k]*(stage_cost(X[:,k],U[1:m,k],Q,R,xf,obj.c) + stage_cost(X[:,k+1],U[1:m,k+1],Q,R,xf,obj.c))/2
+            J += dt[k]*(stage_cost(obj.cost,X[:,k],U[1:m,k]) + stage_cost(obj.cost,X[:,k+1],U[1:m,k+1]))/2
         end
     end
 
 
-    J += ℓ(X[:,N_],zeros(m),Qf,zeros(m,m),xf)
+    J += stage_cost(obj.cost,X[:,N_])
 
     return J
 end
@@ -396,13 +412,13 @@ function cost(solver::Solver,X::AbstractArray,U::AbstractArray,weights::Vector{F
     n,m = get_sizes(solver)
     N_ = size(X,2)
     m̄, = get_num_controls(solver)
-    Qf = solver.obj.Qf; Q = solver.obj.Q;
-    xf = solver.obj.xf; R = solver.obj.R;
-    solver.opts.minimum_time ? dt = U[m̄,:] : dt = ones(N_)*solver.dt
+    Qf = solver.obj.cost.Qf; Q = solver.obj.cost.Q;
+    xf = solver.obj.xf; R = solver.obj.cost.R;
+    solver.state.minimum_time ? dt = U[m̄,:] : dt = ones(N_)*solver.dt
 
     J = zeros(eltype(X),N_)
     for k = 1:N_
-        J[k] = ℓ(X[:,k],U[1:m,k],Q,R,xf)*dt[k]
+        J[k] = stage_cost(solver.obj.cost,X[:,k],U[1:m,k])*dt[k]
     end
 
     J = weights'J
@@ -413,6 +429,10 @@ end
 """
 Gradient of Objective
 """
+function cost_gradient!(grad_f, solver::Solver, res::DircolResults, method::Symbol)
+    cost_gradient!(solver,res.X_,res.U_,res.fVal_,res.A,res.B,res.weights,grad_f,method)
+end
+
 function cost_gradient!(solver::Solver, X, U, fVal, A, B, weights, vals, method::Symbol)
     n,m = get_sizes(solver)
     m̄, = get_num_controls(solver)
@@ -420,7 +440,8 @@ function cost_gradient!(solver::Solver, X, U, fVal, A, B, weights, vals, method:
     dt = solver.dt
 
     obj = solver.obj
-    Q = obj.Q; xf = obj.xf; R = obj.R; Qf = obj.Qf;
+    xf = obj.xf
+    Q = obj.cost.Q; R = obj.cost.R; Qf = obj.cost.Qf;
     # X,U = res.X_, res.U_
     grad_f = reshape(vals, n+m̄, N)
 
@@ -435,7 +456,7 @@ function cost_gradient!(solver::Solver, X, U, fVal, A, B, weights, vals, method:
         Bk = view(B,:,:,1:2:N_)
         fk = fVal
 
-        if solver.opts.minimum_time
+        if solver.state.minimum_time
             dt = Uk[m̄,:]
             c_dt = solver.opts.R_minimum_time
         else
@@ -444,34 +465,34 @@ function cost_gradient!(solver::Solver, X, U, fVal, A, B, weights, vals, method:
 
         grad_f[1:n,1] =     (Q*(Xk[:,1]-xf) + 4*(I_n/2 + dt[1]/8*Ak[:,:,1])'Q*(Xm[:,1] - xf))*dt[1]/6
         grad_f[n.+(1:m),1] = (R*Uk[1:m,1] + 4(dt[1]/8*Bk[:,:,1]'Q*(Xm[:,1] - xf) + R*Um[1:m,1]/2))*dt[1]/6
-        solver.opts.minimum_time ? grad_f[n+m̄,1] = (ℓ(Xk[:,1],Uk[1:m,1],Q,R,xf) + 4ℓ(Xm[:,1],Um[1:m,1],Q,R,xf) + ℓ(Xk[:,2],Uk[1:m,2],Q,R,xf))/6 +
+        solver.state.minimum_time ? grad_f[n+m̄,1] = (stage_cost(obj.cost,Xk[:,1],Uk[1:m,1]) + 4stage_cost(obj.cost,Xm[:,1],Um[1:m,1]) + stage_cost(obj.cost,Xk[:,2],Uk[1:m,2]))/6 +
                                                  (fk[:,1] - fk[:,2])'*Q*(Xm[:,1] - xf)*dt[1]/12 + c_dt : nothing
         for k = 2:N-1
             grad_f[1:n,k] = (Q*(Xk[:,k]-xf) + 4(I_n/2 + dt[k]/8*Ak[:,:,k])'Q*(Xm[:,k] - xf))*dt[k]/6 +
                             (Q*(Xk[:,k]-xf) + 4(I_n/2 - dt[k]/8*Ak[:,:,k])'Q*(Xm[:,k-1] - xf))*dt[k-1]/6
             grad_f[n.+(1:m),k] = (R*Uk[1:m,k] + 4(dt[k]/8*Bk[:,:,k]'Q*(Xm[:,k] - xf)   + R*Um[1:m,k]/2))*dt[k]/6 +
                                  (R*Uk[1:m,k] - 4(dt[k]/8*Bk[:,:,k]'Q*(Xm[:,k-1] - xf) - R*Um[1:m,k-1]/2))*dt[k-1]/6
-            solver.opts.minimum_time ? grad_f[n+m̄,k] = (ℓ(Xk[:,k],Uk[1:m,k],Q,R,xf) + 4ℓ(Xm[:,k],Um[1:m,k],Q,R,xf) + ℓ(Xk[:,k+1],Uk[1:m,k+1],Q,R,xf))/6 +
+            solver.state.minimum_time ? grad_f[n+m̄,k] = (stage_cost(obj.cost,Xk[:,k],Uk[1:m,k]) + 4stage_cost(obj.cost,Xm[:,k],Um[1:m,k]) + stage_cost(obj.cost,Xk[:,k+1],Uk[1:m,k+1]))/6 +
                                                      (fk[:,k] - fk[:,k+1])'*Q*(Xm[:,k] - xf)*dt[k]/12 + c_dt : nothing
         end
         grad_f[1:n,N] = (Q*(Xk[:,N]-xf) + 4(I_n/2 - dt[N-1]/8*Ak[:,:,N])'Q*(Xm[:,N-1] - xf))*dt[N-1]/6
         grad_f[n.+(1:m),N] = (R*Uk[1:m,N] - 4(dt[N-1]/8*Bk[:,:,N]'Q*(Xm[:,N-1] - xf) - R*Um[1:m,N-1]/2))*dt[N-1]/6
-        solver.opts.minimum_time ? grad_f[n+m̄,N] = 0 : nothing
+        solver.state.minimum_time ? grad_f[n+m̄,N] = 0 : nothing
         grad_f[1:n,N] += Qf*(Xk[:,N] - xf)
     elseif method == :midpoint
         I_n = Matrix(I,n,n)
         Xm = X
 
         # Get dt
-        solver.opts.minimum_time ? dt = U[m̄,:] : dt = ones(N)*solver.dt
+        solver.state.minimum_time ? dt = U[m̄,:] : dt = ones(N)*solver.dt
 
         grad_f[1:n,1] = Q*(Xm[:,1] - xf)*dt[1]/2
         grad_f[n.+(1:m),1] = R*U[1:m,1]*dt[1]
-        solver.opts.minimum_time ? grad_f[n+m̄,1] = ℓ(Xm[:,1],U[1:m,1],Q,R,xf) : nothing
+        solver.state.minimum_time ? grad_f[n+m̄,1] = stage_cost(obj.cost,Xm[:,1],U[1:m,1]) : nothing
         for k = 2:N-1
             grad_f[1:n,k] = Q*(Xm[:,k] - xf)*dt[k]/2 + Q*(Xm[:,k-1] - xf)*dt[k-1]/2
             grad_f[n.+(1:m),k] = R*U[1:m,k]*dt[k]
-            solver.opts.minimum_time ? grad_f[n+m̄,k] = ℓ(Xm[:,k],U[1:m,k],Q,R,xf) : nothing
+            solver.state.minimum_time ? grad_f[n+m̄,k] = stage_cost(obj.cost,Xm[:,k],U[1:m,k]) : nothing
         end
         grad_f[1:n,N] = Q*(Xm[:,N-1] - xf)*dt[N-1]/2
         grad_f[n+1:end,N] = zeros(m̄)
@@ -506,6 +527,10 @@ end
 $(SIGNATURES)
 Return all the trajectory points used to evaluate integrals
 """
+function get_traj_points!(solver::Solver,res::DircolResults,method::Symbol)
+    get_traj_points!(solver,res.X,res.U,res.X_,res.U_,res.fVal,method)
+end
+
 function get_traj_points!(solver::Solver,X,U,X_,U_,method::Symbol)
     fVal = zeros(X)
     fVal_ = zeros(X_)
@@ -528,12 +553,12 @@ function get_traj_points!(solver::Solver,X,U,X_,U_,fVal,method::Symbol)
         Um .= (U[1:m,1:end-1] + U[1:m,2:end])/2
         # fValm = view(fVal_,:,2:2:N_-1)
         for k = 1:N-1
-            solver.opts.minimum_time ? dt = U[m̄,k] : nothing
+            solver.state.minimum_time ? dt = U[m̄,k] : nothing
             x1,x2 = X[:,k], X[:,k+1]
             Xm[:,k] = (x1+x2)/2 + dt/8*(fVal[:,k]-fVal[:,k+1])
             # solver.fc(view(fValm,:,k),Xm[:,k],Um[:,k])
         end
-        # if solver.opts.minimum_time
+        # if solver.state.minimum_time
         #     U_[m̄,2:2:N_-1] = U[m̄,1:N-1]
         #     U_[m̄,3:2:N_-2] = (U[m̄,1:N-2] + U[m̄,2:N-1])/2
         #     U_[m̄,N_] = U[m̄,N-1]
@@ -572,6 +597,10 @@ function get_traj_points(solver,X,U,gfVal,gX_,gU_,method::Symbol,cost_only::Bool
     return X_, U_
 end
 
+function get_traj_points_derivatives!(solver::Solver,res::DircolResults,method::Symbol)
+    get_traj_points_derivatives!(solver::Solver,res.X_,res.U_,res.fVal_,res.fVal,method::Symbol)
+end
+
 function get_traj_points_derivatives!(solver::Solver,X_,U_,fVal_,fVal,method::Symbol)
     if method == :hermite_simpson
         N_ = size(X_,2)
@@ -585,28 +614,41 @@ function get_traj_points_derivatives!(solver::Solver,X_,U_,fVal_,fVal,method::Sy
     end
 end
 
+function update_derivatives!(solver::Solver,res::DircolResults,method::Symbol)
+    # Calculate derivative
+    if method != :midpoint
+        update_derivatives!(solver,res.X,res.U,res.fVal)
+    end
+end
+
 function update_derivatives!(solver::Solver,X::AbstractArray,U::AbstractArray,fVal::AbstractArray)
     n,m = get_sizes(solver)
     N = size(X,2)
     for k = 1:N
-        solver.fc(view(fVal,:,k),X[:,k],U[1:m,k])
+        dynamics(solver.model,view(fVal,:,k),X[:,k],U[1:m,k])
+        # solver.model.f(view(fVal,:,k),X[:,k],U[1:m,k])
     end
+end
+
+function update_jacobians!(solver::Solver,res::DircolResults,method::Symbol,cost_only::Bool=false)
+    update_jacobians!(solver,res.X_,res.U_,res.A,res.B,method,cost_only) # TODO: pass in DircolVar
 end
 
 function update_jacobians!(solver::Solver,X,U,A,B,method::Symbol,cost_only::Bool=false)
     n,m = get_sizes(solver)
     N,N_ = get_N(solver,method)
+    Fc = dynamics_jacobian(solver)
     if ~cost_only || method == :hermite_simpson
         if method == :hermite_simpson || method == :midpoint
             inds = cost_only ? (1:2:N_) : (1:N_)  # HS only needs jacobians at knot points for cost gradient
             for k = inds
-                A[:,:,k], B[:,:,k] = solver.Fc(X[:,k],U[1:m,k])
+                A[:,:,k], B[:,:,k] = Fc(X[:,k],U[1:m,k])
             end
         else
             # Z = packZ(X,U)
             # z = reshape(Z,n+m,N)
             for k = 1:N_
-                tA,tB = solver.Fc(X[:,k],U[:,k])
+                tA,tB = Fc(X[:,k],U[:,k])
                 A[:,:,k] = [tA tB]
             end
         end
@@ -627,6 +669,13 @@ Evaluate constraint values
 [           ...                 ]
 [ dt*(f(xN-1)+f(xN))/2 - xN + xN-1 ]
 """
+function collocation_constraints!(c_colloc, solver::Solver, res::DircolResults, method::Symbol)
+    n,m = get_sizes(solver)
+    N,N_ = get_N(solver,method)
+    # g = zeros(eltype(res.X),(N-1)*n)
+    collocation_constraints!(solver,res.X_,res.U_,res.fVal_,c_colloc,method)
+end
+
 function collocation_constraints!(solver::Solver, X, U, fVal, g_colloc, method::Symbol)
     # X,U need to be the "trajectory points", or X_,U_
     N,N_ = get_N(solver,method)
@@ -636,7 +685,7 @@ function collocation_constraints!(solver::Solver, X, U, fVal, g_colloc, method::
     dt = solver.dt
 
     if method == :trapezoid
-        # solver.opts.minimum_time ? dt = U[m̄,:] : dt = ones(N)*solver.dt
+        # solver.state.minimum_time ? dt = U[m̄,:] : dt = ones(N)*solver.dt
         for k = 1:N-1
             # Collocation Constraints
             g[:,k] = dt*( fVal[:,k+1] + fVal[:,k] )/2 - X[:,k+1] + X[:,k]
@@ -645,7 +694,7 @@ function collocation_constraints!(solver::Solver, X, U, fVal, g_colloc, method::
         iLow = 1:2:N_-1
         iMid = iLow .+ 1
         iUpp = iMid .+ 1
-        solver.opts.minimum_time ? dt = U[m̄:m̄,:] : dt = ones(1,N_)*solver.dt
+        solver.state.minimum_time ? dt = U[m̄:m̄,:] : dt = ones(1,N_)*solver.dt
 
         collocation = - X[:,iUpp] + X[:,iLow] + dt[:,iLow].*(fVal[:,iLow] + 4*fVal[:,iMid] + fVal[:,iUpp])/6
 
@@ -666,7 +715,7 @@ function collocation_constraints!(solver::Solver, X, U, fVal, g_colloc, method::
         # for k = 1:N-1
         #     x1,x2 = Xk[:,k],Xk[:,k+1]
         #     u1,u2 = Uk[1:m,k],Uk[1:m,k+1]
-        #     solver.opts.minimum_time ? dt = Uk[m̄,k] : dt = solver.dt
+        #     solver.state.minimum_time ? dt = Uk[m̄,k] : dt = solver.dt
         #     f1 = Fk[:,k]
         #     f2 = Fk[:,k+1]
         #     fm = Fm[:,k]
@@ -678,7 +727,7 @@ function collocation_constraints!(solver::Solver, X, U, fVal, g_colloc, method::
         # Calculate the knot points from the midpoints (and the terminal point)
         Xk = zero(Xm)
         Xk[:,end] = Xm[:,end]
-        solver.opts.minimum_time ? dt = U[m̄,:] : dt = ones(N_)*solver.dt
+        solver.state.minimum_time ? dt = U[m̄,:] : dt = ones(N_)*solver.dt
         for k = N-1:-1:1
             Xk[:,k] = 2Xm[:,k] - Xk[:,k+1]
         end
@@ -699,6 +748,12 @@ end
 """
 Constraint Jacobian
 """
+function constraint_jacobian!(c_jacob, solver::Solver, res::DircolResults, method::Symbol)
+    N,N_ = get_N(solver,method)
+    n,m = get_sizes(solver)
+    collocation_constraint_jacobian!(solver,res.X_,res.U_, res.fVal_, res.A,res.B, c_jacob, method)
+end
+
 function collocation_constraint_jacobian!(solver::Solver, X, U, fVal, A::Array{Float64,3}, B::Array{Float64,3}, vals, method::Symbol)
     # X and U are X_, U_ trajectory points
     N,N_ = get_N(solver,method)
@@ -711,13 +766,13 @@ function collocation_constraint_jacobian!(solver::Solver, X, U, fVal, A::Array{F
         Z = packZ(X,U)
         z = reshape(Z,n+m̄,N)
         n_blk = 2(n+m̄)n
-        solver.opts.minimum_time ? dt = U[m̄,:] : dt = ones(N_)*solver.dt
+        solver.state.minimum_time ? dt = U[m̄,:] : dt = ones(N_)*solver.dt
 
         function calc_block_trap(k,blk::SubArray{Float64})
             blk = reshape(blk,n,2(n+m̄))
             blk[:,1:n+m] =         dt[k]*A[:,:,k  ]/2+Inm
             blk[:,n.+m̄.+(1:n+m)] = dt[k]*A[:,:,k+1]/2-Inm
-            if solver.opts.minimum_time
+            if solver.state.minimum_time
                 blk[:,n+m̄] = (fVal[:,k] + fVal[:,k+1])/2
             end
             return nothing
@@ -770,7 +825,7 @@ function collocation_constraint_jacobian!(solver::Solver, X, U, fVal, A::Array{F
         fk = view(fVal,:,1:2:N_)
         fm = view(fVal,:,2:2:N_-1)
 
-        solver.opts.minimum_time ? dt = Uk[m̄,:] : dt = ones(N_)*solver.dt
+        solver.state.minimum_time ? dt = Uk[m̄,:] : dt = ones(N_)*solver.dt
 
         function calc_block_hs!(k::Int,vals::SubArray)
             x1,u1 = Xk[:,k],Uk[:,k]
@@ -788,7 +843,7 @@ function collocation_constraint_jacobian!(solver::Solver, X, U, fVal, A::Array{F
             vals[:,n.+(1:m)] =     dt[k]/6*(B1 + 4Am*( dt[k]/8*B1) + 4Bm*(Im/2))   # ∇u1
             vals[:,n.+m̄.+(1:n)] =  dt[k]/6*(A2 + 4Am*(-dt[k]/8*A2 + In/2)) - In    # ∇x2
             vals[:,2n.+m̄.+(1:m)] = dt[k]/6*(B2 + 4Am*(-dt[k]/8*B2) + 4Bm*(Im/2))   # ∇u2
-            if solver.opts.minimum_time
+            if solver.state.minimum_time
                 vals[:,n+m̄] = (fk[:,k] + 4fm[:,k] + fk[:,k+1])/6 + dt[k]/12*Am*(fk[:,k] - fk[:,k+1])
             end
             return nothing
@@ -822,8 +877,138 @@ function collocation_constraint_jacobian!(solver::Solver, X, U, fVal, A::Array{F
     return nothing
 end
 
+
+function constraint_jacobian(solver::Solver, res::DircolResults, method::Symbol)
+    N,N_ = get_N(solver,method)
+    n,m = get_sizes(solver)
+    # jacob_g = spzeros((N-1)*n,N*(n+m))
+    jacob_g = constraint_jacobian(solver,res.X_,res.U_,res.A,res.B,method)
+    return jacob_g
+end
+
+function constraint_jacobian(solver::Solver, X, U, A, B, method::Symbol)
+    N,N_ = get_N(solver,method)
+    n,m = get_sizes(solver)
+    jacob_g = spzeros((N-1)*n,N*(n+m))
+    Inm = Matrix(I,n,n+m)
+    dt = solver.dt
+
+    if method == :trapezoid
+        Z = packZ(X,U)
+        z = reshape(Z,n+m,N)
+
+        solver.state.minimum_time ? dt = U[m̄:m̄,:] : dt = ones(1,N_)*solver.dt
+
+        # First time step
+        fz = A[:,:,1]
+        jacob_g[1:n,1:n+m] .= dt[1]*fz/2+Inm
+
+        # Loop over time steps
+        for k = 2:N-1
+            off_1 = (k-1)*(n)
+            off_2 = (k-1)*(n+m)
+            # Calculate (n,n+m) Jacobian of both states and controls
+            fz = A[:,:,k]  #F(z[:,k])
+            jacob_g[off_1.-n.+(1:n),off_2.+(1:n+m)] .= dt[k]*fz/2 - Inm
+            jacob_g[off_1  .+ (1:n),off_2.+(1:n+m)] .= dt[k]*fz/2 + Inm
+        end
+
+        # Last time step
+        fz = A[:,:,N]  # F(z[:,N])
+        jacob_g[end-n+1:end,end-n-m+1:end] = dt[N-1]*fz/2-Inm
+
+    elseif method == :hermite_simpson_separated
+        nSeg = Int((N-1)/2)
+        Z = packZ(X,U)
+        z = reshape(Z,n+m,N)
+
+        fz1 = A[:,:,1]  # F(z[:,1])
+
+        function calc_block(k)
+            vals = zeros(2n,3(n+m))
+            fz = A[:,:,k]  # F(z[:,k])
+            vals[   (1:n),(1:n+m)] .= dt*fz/6 + Inm
+            vals[n.+(1:n),(1:n+m)] .= dt*fz/8 + Inm/2
+            fm = A[:,:,k+1]  # F(z[:,k+1])
+            vals[   (1:n),n.+m.+(1:n+m)] .= 2*dt*fm/3
+            vals[n.+(1:n),n.+m.+(1:n+m)] .= -Inm
+            fz1 .= A[:,:,k+2]  # F(z[:,k+2])
+            vals[   (1:n),2(n+m).+(1:n+m)] .=  dt*fz1/6 - Inm
+            vals[n.+(1:n),2(n+m).+(1:n+m)] .= -dt*fz1/8 + Inm/2
+            return vals
+        end
+
+
+        for i = 1:nSeg
+            off_1 = 2(i-1)*(n)
+            off_2 = 2(i-1)*(n+m)
+            k = 2i-1
+
+            jacob_g[off_1.+(1:2n), off_2.+(1:3(n+m))] = calc_block(k)
+        end
+    elseif method == :hermite_simpson
+        nSeg = N-1
+
+        Xk = view(X,:,1:2:N_)
+        Uk = view(U,:,1:2:N_)
+        Xm = view(X,:,2:2:N_-1)
+        Um = view(U,:,2:2:N_-1)
+        Ak = view(A,:,:,1:2:N_)
+        Bk = view(B,:,:,1:2:N_)
+        AM = view(A,:,:,2:2:N_-1)
+        BM = view(B,:,:,2:2:N_-1)
+
+        function calc_jacob_block(k::Int)::Matrix
+            x1,u1 = Xk[:,k],Uk[:,k]
+            x2,u2 = Xk[:,k+1],Uk[:,k+1]
+            A1,A2 = Ak[:,:,k],Ak[:,:,k+1]
+            B1,B2 = Bk[:,:,k],Bk[:,:,k+1]
+            xm = Xm[:,k] #(x1+x2)/2 + dt/8*(fVal[:,k]-fVal[:,k+1])
+            um = Um[:,k] # (u1+u2)/2
+            Am,Bm = AM[:,:,k],BM[:,:,k]
+            In = Matrix(I,n,n)
+            Im = Matrix(I,m,m)
+
+            vals = zeros(n,2(n+m))
+            vals[:,1:n] =          dt/6*(A1 + 4Am*( dt/8*A1 + In/2)) + In    # ∇x1
+            vals[:,n.+(1:m)] =     dt/6*(B1 + 4Am*( dt/8*B1) + 4Bm*(Im/2))   # ∇u1
+            vals[:,n.+m.+(1:n)] =  dt/6*(A2 + 4Am*(-dt/8*A2 + In/2)) - In    # ∇x2
+            vals[:,2n.+m.+(1:m)] = dt/6*(B2 + 4Am*(-dt/8*B2) + 4Bm*(Im/2))   # ∇u2
+            return vals
+        end
+
+        for k = 1:nSeg
+            off_1 = (k-1)*(n)
+            off_2 = (k-1)*(n+m)
+            jacob_g[off_1.+(1:n), off_2.+(1:2(n+m))] = calc_jacob_block(k)
+        end
+
+    elseif method == :midpoint
+        nSeg = N-1
+        In = Matrix(I,n,n)
+
+        function calc_jacob_block_midpoint(k)
+            vals = zeros(n,2(n+m))
+            vals[:,1:n] =          In + dt*A[:,:,k]/2    # ∇x1
+            vals[:,n.+(1:m)] =     dt*B[:,:,k]           # ∇u1
+            vals[:,n.+m.+(1:n)] = -In + dt*A[:,:,k]/2    # ∇x2
+            vals[:,2n.+m.+(1:m)] = zeros(n,m)            # ∇u2
+            return vals
+        end
+
+        for k = 1:nSeg
+            off_1 = (k-1)*(n)
+            off_2 = (k-1)*(n+m)
+            jacob_g[off_1.+(1:n), off_2.+(1:2(n+m))] = calc_jacob_block_midpoint(k)
+        end
+    end
+
+    return jacob_g
+end
+
 function time_step_constraint_jacobian!(vals, solver::Solver)
-    if solver.opts.minimum_time
+    N = solver.N
+    if solver.state.minimum_time
         vals[1:2:2(N-2)] .= 1
         vals[2:2:2(N-2)+1] .= -1
     end
@@ -889,7 +1074,7 @@ function time_step_constraint_jacobian_sparsity(solver::Solver, start::Int=0)
     n,m,N = get_sizes(solver)
     m̄, = get_num_controls(solver)
     NN = (n+m̄)N
-    if solver.opts.minimum_time
+    if solver.state.minimum_time
         jacob_dt = spzeros(Int,N-2,NN)
         dts = n+m̄:n+m̄:NN-2(n+m̄)
         jacob_dt[CartesianIndex.(1:N-2,dts)] = (1:2:2(N-2)) .+ start
@@ -900,35 +1085,6 @@ function time_step_constraint_jacobian_sparsity(solver::Solver, start::Int=0)
     end
 end
 
-"""
-$(SIGNATURES)
-Interpolate a trajectory using cubic interpolation
-"""
-function interp_traj(N::Int,tf::Float64,X::Matrix,U::Matrix)::Tuple{Matrix,Matrix}
-    if isempty(X)
-        X2 = X
-    else
-        X2 = interp_rows(N,tf,X)
-    end
-    U2 = interp_rows(N,tf,U)
-    return X2, U2
-end
-
-"""
-$(SIGNATURES)
-Interpolate the rows of a matrix using cubic interpolation
-"""
-function interp_rows(N::Int,tf::Float64,X::Matrix)::Matrix
-    n,N1 = size(X)
-    t1 = range(0,stop=tf,length=N1)
-    t2 = collect(range(0,stop=tf,length=N))
-    X2 = zeros(n,N)
-    for i = 1:n
-        interp_cubic = CubicSplineInterpolation(t1, X[i,:])
-        X2[i,:] = interp_cubic(t2)
-    end
-    return X2
-end
 
 
 # JUNK FUNCTIONS
@@ -995,10 +1151,10 @@ end
 
 function interp(t,T,X,U,F)
     k = findlast(t .> T)
-    τ = t-T[k]
+    constraint_decrease_ratio = t-T[k]
     if method == :trapezoid
-        u = U[:,k] + τ/dt*(F[:,k+1]-F[:,k])
-        x = X[:,k] + F[:,k]*τ + τ^2/(2*dt)*(F[:,k+1]-F[:,k])
+        u = U[:,k] + constraint_decrease_ratio/dt*(F[:,k+1]-F[:,k])
+        x = X[:,k] + F[:,k]*constraint_decrease_ratio + constraint_decrease_ratio^2/(2*dt)*(F[:,k+1]-F[:,k])
     elseif method == :hermite_simpson || method == :hermite_simpson_separated
         x1,x2 = X[:,k], X[:,k+1]
         u1,u2 = U[:,k], U[:,k+1]
@@ -1006,8 +1162,8 @@ function interp(t,T,X,U,F)
         xm = (x1+x2)/2 + dt/8*(f1-f2)
         um = (U[:,k] + U[:,k+1])/2
 
-        u = (2(τ-dt/2)(τ-dt)U[:,k] - 4τ*(τ-dt)Um + 2τ*(τ-dt/2)*U[:,k+1])/dt^2
-        x = X[:,k] + F[:,k]*τ/dt + 1/2*(-3F[:,])
+        u = (2(constraint_decrease_ratio-dt/2)(constraint_decrease_ratio-dt)U[:,k] - 4constraint_decrease_ratio*(constraint_decrease_ratio-dt)Um + 2constraint_decrease_ratio*(constraint_decrease_ratio-dt/2)*U[:,k+1])/dt^2
+        x = X[:,k] + F[:,k]*constraint_decrease_ratio/dt + 1/2*(-3F[:,])
     end
     return x,u
 end

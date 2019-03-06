@@ -1,19 +1,23 @@
-using HDF5
-# High-Accuracy DIRCOL
+using HDF5, Logging, BenchmarkTools, LinearAlgebra, Statistics
+import TrajectoryOptimization: get_time
 
-function run_step_size_comparison(model, obj, U0, group::String, Ns; integrations::Vector{Symbol}=[:midpoint,:rk3,:rk3_foh,:rk4],dt_truth=1e-3,opts=opts,infeasible=false,X0=Matrix{Float64}(undef,0,1))
-    solver = Solver(model, obj, integration=:rk3_foh, N=size(U0,2))
-    if infeasible
-        if isempty(X0)
-            X0 = line_trajectory(solver)
+IMAGE_DIR = joinpath(TrajectoryOptimization.root_dir(),"development","paper","images")
+
+function run_step_size_comparison(model, obj, U0, group::String, Ns;
+        integrations::Vector{Symbol}=[:rk3,:snopt,:ipopt],
+        dt_truth=1e-3,opts=opts,infeasible=false,X0=Matrix{Float64}(undef,0,1),benchmark=false)
+    solver = Solver(model, obj, integration=:rk3, N=size(U0,2))
+    if isempty(X0)
+        if infeasible
+                X0 = line_trajectory(solver)
+        else
+            X0 = rollout(solver,U0)
         end
-    else
-        X0 = rollout(solver,U0)
     end
 
-    solver_truth = Solver(model, obj, dt=dt_truth, integration=:rk3_foh)
+    solver_truth = Solver(model, obj, dt=dt_truth)
     X_truth, U_truth = get_dircol_truth(solver_truth,X0,U0,group)[2:3]
-    interp(t) = interpolate_trajectory(solver_truth, X_truth, U_truth, t)
+    interp(t) = TrajectoryOptimization.interpolate_trajectory(solver_truth, X_truth, U_truth, t)
 
     h5open("data.h5","cw") do file
         N_group =  group * "/N_plots"
@@ -29,29 +33,34 @@ function run_step_size_comparison(model, obj, U0, group::String, Ns; integration
         g_parent["Ns"] = Ns
     end
 
-    run_Ns(model, obj, X0, U0, Ns, :hermite_simpson, interp, group, opts=opts, infeasible=infeasible)
+    # run_Ns(model, obj, X0, U0, Ns, :hermite_simpson, interp, group, opts=opts, infeasible=infeasible, benchmark=benchmark)
     for integration in integrations
         println("Starting Integration :$integration")
-        run_Ns(model, obj, X0, U0, Ns, integration, interp, group, opts=opts, infeasible=infeasible)
+        run_Ns(model, obj, X0, U0, Ns, integration, interp, group, opts=opts, infeasible=infeasible, benchmark=benchmark)
     end
+
 end
 
 function get_dircol_truth(solver::Solver,X0,U0,group)#::Tuple{Solver, Matrix{Float64}, Matrix{Float64}}
     read_dircol_truth = false
-    file = h5open("data.h5","r")
-    if exists(file,group)
-        if exists(file,group * "/dircol_truth")
-            if exists(file,group * "/dircol_truth/dt")
-                if read(file,group * "/dircol_truth/dt")[1] == solver.dt
-                    read_dircol_truth = true
+    if isfile("data.h5")
+        file = h5open("data.h5","r")
+        if exists(file,group)
+            if exists(file,group * "/dircol_truth")
+                if exists(file,group * "/dircol_truth/dt")
+                    if read(file,group * "/dircol_truth/dt")[1] == solver.dt
+                        read_dircol_truth = true
+                    end
                 end
             end
         end
+    else
+        file = h5open("data.h5","cw")
     end
     if read_dircol_truth
         @info "Reading Dircol Truth from file"
         dt = Float64(read(file,group * "/dircol_truth/dt")[1])
-        solver_truth = Solver(solver,integration=:rk3_foh)
+        solver_truth = Solver(solver)
         X_truth = read(file,group * "/dircol_truth/X")
         U_truth = read(file,group * "/dircol_truth/U")
         close(file)
@@ -68,7 +77,7 @@ end
 
 function run_dircol_truth(solver::Solver, X0, U0, group::String)
     println("Solving DIRCOL \"truth\"")
-    solver_truth = Solver(solver,integration=:rk3_foh)
+    solver_truth = Solver(solver)
     res_truth, stat_truth = solve_dircol(solver_truth, X0, U0, method=:hermite_simpson)
 
     println("Writing results to file")
@@ -86,7 +95,14 @@ function run_dircol_truth(solver::Solver, X0, U0, group::String)
     return solver_truth, res_truth, stat_truth
 end
 
-function run_Ns(model, obj, X0, U0, Ns, integration, interp::Function, group::String; infeasible=false, opts=SolverOptions())
+function run_Ns(model, obj, X0, U0, Ns, integration, interp::Function, group::String; infeasible=false, opts=SolverOptions(), benchmark=false)
+    err, err_final, stats = run_Ns(model, obj, X0, U0, Ns, interp, integration=integration, infeasible=infeasible, opts=opts, benchmark=benchmark)
+    save_Ns(err, err_final, stats, group, String(integration))
+
+    return err, err_final, stats
+end
+
+function run_Ns(model, obj, X0, U0, Ns, interp; integration=:rk3, infeasible=false, opts=SolverOptions(),benchmark=false)
     num_N = length(Ns)
 
     err = zeros(num_N)
@@ -96,9 +112,20 @@ function run_Ns(model, obj, X0, U0, Ns, integration, interp::Function, group::St
     for (i,N) in enumerate(Ns)
         println("Solving with $N knot points")
 
-        if integration == :hermite_simpson
-            solver = Solver(model, obj, N=N, opts=opts, integration=:rk3_foh)
-            res,stat = solve_dircol(solver, X0, U0, method=integration)
+        if integration in [:snopt, :ipopt]
+            solver = Solver(model, obj, N=N, opts=opts)
+            dircol_options = Dict("tol"=>opts.cost_tolerance,"constr_viol_tol"=>opts.constraint_tolerance)
+            res,stat = solve_dircol(solver, X0, U0, method=:hermite_simpson, options=dircol_options, nlp=integration)
+            if benchmark
+                b = @benchmark solve_dircol($solver, $X0, $U0, method=:hermite_simpson, options=$dircol_options)
+                times = filter(isfinite,b.times)
+                stat["runtime"] = time(median(b))/1e9
+                stat["std"] = std(times)/1e9
+                stat["samples"] = length(times)
+            else
+                stat["std"] = 0
+                stat["samples"] = 1
+            end
             t = get_time(solver)
             Xi,Ui = interp(t)
             err[i] = norm(Xi-res.X)/N
@@ -108,8 +135,28 @@ function run_Ns(model, obj, X0, U0, Ns, integration, interp::Function, group::St
             solver = Solver(model,obj,N=N,opts=opts,integration=integration)
             if infeasible
                 res,stat = solve(solver,X0,U0)
+                if benchmark
+                    b = @benchmark solve($solver,$X0,$U0)
+                    times = filter(isfinite,b.times)
+                    stat["runtime"] = time(median(b))/1e9
+                    stat["std"] = std(times)/1e9
+                    stat["samples"] = length(times)
+                else
+                    stat["std"] = 0
+                    stat["samples"] = 1
+                end
             else
                 res,stat = solve(solver,U0)
+                if benchmark
+                    b = @benchmark solve($solver,$U0)
+                    times = filter(isfinite,b.times)
+                    stat["runtime"] = time(median(b))/1e9
+                    stat["std"] = std(times)/1e9
+                    stat["samples"] = length(times)
+                else
+                    stat["std"] = 0
+                    stat["samples"] = 1
+                end
             end
             X = to_array(res.X)
             t = get_time(solver)
@@ -122,6 +169,10 @@ function run_Ns(model, obj, X0, U0, Ns, integration, interp::Function, group::St
     end
     disable_logging(Logging.Debug)
 
+    return err, err_final, stats
+end
+
+function save_Ns(err, err_final, stats, group::String, name::String)
     # Save to h5 file
     h5open("data.h5","cw") do file
         group *= "/N_plots/"
@@ -131,7 +182,6 @@ function run_Ns(model, obj, X0, U0, Ns, integration, interp::Function, group::St
             g_parent = g_create(file, group)
         end
 
-        name = String(integration)
         if has(g_parent, name)
             o_delete(g_parent, name)
         end
@@ -142,34 +192,48 @@ function run_Ns(model, obj, X0, U0, Ns, integration, interp::Function, group::St
         g["error"] = err
         g["error_final"] = err_final
         g["iterations"] = [stat["iterations"] for stat in stats]
+        g["std"] = [stat["std"] for stat in stats]
+        g["samples"] = [stat["samples"] for stat in stats]
         if ~isempty(stats[1]["c_max"])
             g["c_max"] = [stat["c_max"][end] for stat in stats]
         end
     end
-
-    return err, err_final, stats
 end
+
+
 
 function plot_stat(stat::String, group, plot_names::Vector{Symbol}; kwargs...)
     plot_names = [string(name) for name in plot_names]
     plot_stat(stat, group, plot_names; kwargs...)
 end
 
-function plot_stat(stat::String, group, plot_names::Vector{String}=["midpoint", "rk3", "rk3_foh", "rk4", "hermite_simpson"]; kwargs...)
+function plot_stat(stat::String, group, plot_names::Vector{String}=["midpoint", "rk3", "rk3_foh", "rk4", "ipopt", "snopt"]; kwargs...)
     fid = h5open("data.h5","r")
     file_names = names(fid[group * "/N_plots"])
     use_names = intersect(file_names, plot_names)
     close(fid)
 
+    if :label in keys(kwargs) && length(kwargs[:label]) == length(use_names)
+        label = kwargs[:label]
+    else
+        label = use_names
+    end
+
     Ns, data = load_data(stat, use_names, group)
-    plot_vals(Ns, data, use_names, stat; kwargs...)
+    plot_vals(Ns, data, label, stat; kwargs...)
 end
 
 function plot_vals(Ns,vals,labels,name::String; kwargs...)
-    p = plot(Ns,vals[1], label=labels[1], marker=:circle, ylabel=name, xlabel="Number of Knot Points"; kwargs...)
-    for (val,label) in zip(vals[2:end],labels[2:end])
+    if :color in keys(kwargs) && length(kwargs[:color]) == length(vals)
+        colors = kwargs[:color]
+    else
+        colors = 1:length(vals)
+    end
+    p = plot(Ns,vals[1], label=labels[1], marker=:circle, ylabel=name, xlabel="Number of Knot Points",
+        color=colors[1],markerstrokecolor=colors[1]; kwargs...)
+    for (val,label,color) in zip(vals[2:end],labels[2:end],colors[2:end],labels[2:end])
         if ~isempty(val)
-            plot!(Ns,val,label=label,marker=:circle)
+            plot!(Ns,val,label=label,marker=:circle,color=color,markerstrokecolor=color)
         end
     end
     p
@@ -231,4 +295,44 @@ function load_data(stat::String, name::String, group)
         data = read(g_parent[name], stat)
         return vec(Ns), data
     end
+end
+
+
+function constraint_plot(solver,U0::Trajectory, nesterov::Bool=true; kwargs...)
+    solver.opts.verbose = false
+    solver.opts.square_root = false
+    solver.opts.use_nesterov = false
+    res0, stats0 = solve(solver,U0)
+
+    solver.opts.square_root = true
+    res1, stats1 = solve(solver,U0)
+
+    solver.opts.use_nesterov = true
+    res2, stats2 = solve(solver,U0)
+
+    plot(stats0["c_max"],yscale=:log10,label="normal",ylabel="max constraint violation",xlabel="iteration",linewidth=2)
+    plot!(stats1["c_max"],label="square root",linewidth=2)
+    plot!(stats2["c_max"],label="nesterov",linewidth=2; kwargs...)
+end
+
+function constraint_plot(solver,X0::Matrix,U0::Matrix, nesterov::Bool=true; kwargs...)
+    solver.opts.verbose = false
+    solver.opts.square_root = false
+    solver.opts.use_nesterov = false
+    res0, stats0 = solve(solver,X0,U0)
+
+    solver.opts.square_root = true
+    res1, stats1 = solve(solver,X0,U0)
+
+    if nesterov
+        solver.opts.use_nesterov = true
+        res2, stats2 = solve(solver,X0,U0)
+    end
+
+    p = plot(stats0["c_max"],yscale=:log10,label="normal",ylabel="max constraint violation",xlabel="iteration",linewidth=2)
+    plot!(stats1["c_max"],label="square root",linewidth=2)
+    if nesterov
+        plot!(stats2["c_max"],label="nesterov",linewidth=2; kwargs...)
+    end
+    p
 end

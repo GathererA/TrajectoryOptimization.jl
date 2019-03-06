@@ -10,6 +10,7 @@ module TrajectoryOptimization
 
 using RigidBodyDynamics
 using ForwardDiff
+using JuMP
 using DocStringExtensions
 using Interpolations
 using RecipesBase
@@ -23,7 +24,6 @@ using Formatting
 using Plots
 using BenchmarkTools
 
-
 export
     Dynamics
 
@@ -34,17 +34,20 @@ export
     SolverResults,
     ConstrainedObjective,
     UnconstrainedObjective,
+    LQRObjective,
+    QuadraticCost,
+    LQRCost,
+    GenericCost,
     ConstrainedVectorResults,
     UnconstrainedVectorResults,
-    ConstrainedStaticResults,
-    UnconstrainedStaticResults,
-    SolverOptions
+    SolverOptions,
+    Trajectory
 
 # Primary methods
 export
     solve,
-    solve_al,
     rollout!,
+    rollout,
     forwardpass!,
     backwardpass!,
     cost,
@@ -61,22 +64,39 @@ export
     to_array,
     get_N,
     quat2rot,
-    sphere_constraints,
-    circle_constraints,
+    sphere_constraint,
+    circle_constraint,
+    plot_trajectory!,
+    plot_vertical_lines!,
+    convergence_rate,
+    plot_obstacles,
     generate_controller,
-    lqr
+    lqr,
+    evals,
+    reset,
+    reset_evals
 
+include("objective.jl")
 include("model.jl")
 include("integration.jl")
 include("solver.jl")
 include("results.jl")
-include("ilqr_algorithm.jl")
+include("results_dircol.jl")
+include("backwardpass.jl")
+include("forwardpass.jl")
+include("constraints.jl")
+include("rollout.jl")
+#include("newton.jl")
+include("infeasible.jl")
+include("minimum_time.jl")
 include("ilqr_methods.jl")
+include("augmented_lagrangian.jl")
 include("solve.jl")
 include("utils.jl")
 include("dynamics.jl")
 include("logger.jl")
 include("controller.jl")
+include("partitioning.jl")
 
 using Ipopt
 
@@ -102,9 +122,9 @@ unpackZ
 include("dircol.jl")
 include("dircol_ipopt.jl")
 write_ipopt_options()
-#
-# if check_snopt_installation()
-#     # using Snopt # not safe for precompilation
+
+# if "Snopt" in keys(Pkg.installed())
+#     using Snopt # not safe for precompilation
 #     include("dircol_snopt.jl")
 # end
 
