@@ -218,7 +218,9 @@ function stage_cost(x,u,Q::AbstractArray{Float64,2},R::AbstractArray{Float64,2},
 end
 
 function stage_cost_sat_att(x,u,Q::AbstractArray{Float64,2},R::AbstractArray{Float64,2},xf::Vector{Float64},c::Float64=0)::Union{Float64,ForwardDiff.Dual}
-    0.5*(x[1:3] - xf[1:3])'*Q[1:3,1:3]*(x[1:3] - xf[1:3]) + 0.5*u'*R*u + Q[4,4]*-(xf[4:7]'*x[4:7])
+    # 0.5*(x[1:3] - xf[1:3])'*Q[1:3,1:3]*(x[1:3] - xf[1:3]) + 0.5*u'*R*u + Q[4,4]*-(xf[4:7]'*x[4:7])
+    error_quat = [zeros(3,1) Array(1.0*Diagonal(I,3))]*qmult(q_inv(xf[4:7]),x[4:7])
+    0.5*(x[1:3] - xf[1:3])'*Q[1:3,1:3]*(x[1:3] - xf[1:3]) + 0.5*u'*R*u + Q[4,4]*(error_quat'*error_quat) + c
 end
 
 function stage_cost(obj::Objective, x::Vector, u::Vector)::Float64
@@ -938,4 +940,27 @@ end
 
 function get_time(solver::Solver)
     range(0,stop=solver.obj.tf,length=solver.N)
+end
+
+
+function qrot(q,r)
+      r + 2*cross(q[2:4],cross(q[2:4],r) + q[1]*r)
+end
+
+function qmult(q1,q2)
+      [q1[1]*q2[1] - q1[2:4]'*q2[2:4]; q1[1]*q2[2:4] + q2[1]*q1[2:4] + cross(q1[2:4],q2[2:4])]
+end
+
+function q_inv(q)
+    [q[1]; -q[2:4]]
+end
+
+function q_log(q)
+    q[1]*q[2:4]
+end
+
+function hat(x)
+    [  0   -x[3]  x[2]
+         x[3]   0   -x[1]
+        -x[2]  x[1]  0];
 end
