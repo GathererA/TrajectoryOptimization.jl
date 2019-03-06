@@ -82,16 +82,10 @@ function _solve(solver::Solver{M,Obj}, U0::Array{Float64,2}, X0::Array{Float64,2
     # Start timer
     t_start = time_ns()
 
-<<<<<<< HEAD
-    ## Unpack model, objective, and solver parameters
-    n,m,N = get_sizes(solver)
-    m̄,mm = get_num_controls(solver)
-=======
     # Check for penalty burn-in mode
     if !solver.opts.use_penalty_burnin
         solver.state.penalty_only = false
     end
->>>>>>> upstream/master
 
     # Check for minimum time solve
     is_min_time(solver) ? solver.state.minimum_time = true : solver.state.minimum_time = false

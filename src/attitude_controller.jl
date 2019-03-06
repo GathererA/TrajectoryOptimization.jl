@@ -6,7 +6,7 @@
         -option for controller saturation with max/min limits
 """
 
-function attitude_simulation(f!::Function,f_gains!::Function,integration,X_lqr::Matrix, U_lqr::Matrix,dt_lqr::Float64,x0_lqr::AbstractVector,tf::Float64,Q_lqr::AbstractArray{Float64,2}, R_lqr::AbstractArray{Float64,2}, Qf_lqr::AbstractArray{Float64,2})
+function attitude_simulation(f!::Function,f_gains!::Function,integration,X_lqr::Matrix, U_lqr::Matrix,dt_lqr::Float64,x0_lqr::AbstractVector,t0::Float64,tf::Float64,Q_lqr::AbstractArray{Float64,2}, R_lqr::AbstractArray{Float64,2}, Qf_lqr::AbstractArray{Float64,2})
     """
     X - (n,N)
     U - zoh: (m,N-1), foh: (m,N)
@@ -14,7 +14,8 @@ function attitude_simulation(f!::Function,f_gains!::Function,integration,X_lqr::
     """
     n=size(X_lqr,1)
     m=size(U_lqr,1)
-    t_sim = t0:dt_lqr:tf
+    dt = dt_lqr
+    t_sim = t0:dt:tf
     if length(t_sim) > size(X_lqr,2)
         t_sim = t0:dt:(tf-dt)
     end

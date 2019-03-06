@@ -85,89 +85,13 @@ function _cost(solver::Solver{M,Obj},res::SolverVectorResults,X=res.X,U=res.U) w
     # Terminal Cost
     J += stage_cost(costfun, X[N][1:n])
 
-function stage_cost_sat_att(x,u,Q::AbstractArray{Float64,2},R::AbstractArray{Float64,2},xf::Vector{Float64},c::Float64=0)::Union{Float64,ForwardDiff.Dual}
-    # 0.5*(x[1:3] - xf[1:3])'*Q[1:3,1:3]*(x[1:3] - xf[1:3]) + 0.5*u'*R*u + Q[4,4]*-(xf[4:7]'*x[4:7])
-    error_quat = [zeros(3,1) Array(1.0*Diagonal(I,3))]*qmult(q_inv(xf[4:7]),x[4:7])
-    0.5*(x[1:3] - xf[1:3])'*Q[1:3,1:3]*(x[1:3] - xf[1:3]) + 0.5*u'*R*u + Q[4,4]*(error_quat'*error_quat) + c
-end
-
-function stage_cost(obj::Objective, x::Vector, u::Vector)::Float64
-    0.5*(x - obj.xf)'*obj.Q*(x - obj.xf) + 0.5*u'*obj.R*u + obj.c
-end
-
-function ℓ(x,u,Q,R,xf=zero(x))
-    0.5*(x - xf)'*Q*(x - xf) + 0.5*u'*R*u
+    return J
 end
 
 """
 $(SIGNATURES)
     Compute the Augmented Lagrangian constraints cost
 """
-function cost(solver::Solver,vars::DircolVars)
-    cost(solver,vars.X,vars.U)
-end
-
-function _cost_sat_att(solver::Solver,res::SolverVectorResults,X=res.X,U=res.U)
-    # pull out solver/objective values
-    n,m,N = get_sizes(solver)
-    m̄,mm = get_num_controls(solver)
-    obj = solver.obj
-    Q = obj.Q; R = obj.R; xf::Vector{Float64} = obj.xf; Qf::Matrix{Float64} = obj.Qf
-    dt = solver.dt
-
-    J = 0.0
-    for k = 1:N-1
-        solver.opts.minimum_time ? dt = U[k][m̄]^2 : nothing
-        if solver.control_integration == :foh
-            xm = res.xm[k]
-            um = res.um[k]
-            J += dt*(1/6*ℓ(X[k],U[k][1:m],Q,R,xf) + 4/6*ℓ(xm,um[1:m],Q,R,xf) + 1/6*ℓ(X[k+1],U[k+1][1:m],Q,R,xf)) # Simpson quadrature (integral approximation) for foh stage cost
-            solver.opts.minimum_time ? J += solver.opts.R_minimum_time*dt : nothing
-            solver.opts.infeasible ? J += 0.5*solver.opts.R_infeasible*U[k][m̄.+(1:n)]'*U[k][m̄.+(1:n)] : nothing
-        else
-            J += dt*stage_cost_sat_att(X[k],U[k],Q,getR(solver),xf,obj.c)
-            # J += dt*ℓ(X[k],U[k][1:m],Q,R,xf)
-            # solver.opts.minimum_time ? J += solver.opts.R_minimum_time*dt : nothing
-            # solver.opts.infeasible ? J += 0.5*solver.opts.R_infeasible*U[k][m̄.+(1:n)]'*U[k][m̄.+(1:n)] : nothing
-        end
-    end
-
-    J += 0.5*(X[N] - xf)'*Qf*(X[N] - xf)
-
-    return J
-end
-
-function _cost(solver::Solver,res::SolverVectorResults,X=res.X,U=res.U)
-    # pull out solver/objective values
-    n,m,N = get_sizes(solver)
-    m̄,mm = get_num_controls(solver)
-    obj = solver.obj
-    Q = obj.Q; R = obj.R; xf::Vector{Float64} = obj.xf; Qf::Matrix{Float64} = obj.Qf
-    dt = solver.dt
-
-    J = 0.0
-    for k = 1:N-1
-        solver.opts.minimum_time ? dt = U[k][m̄]^2 : nothing
-        if solver.control_integration == :foh
-            xm = res.xm[k]
-            um = res.um[k]
-            J += dt*(1/6*ℓ(X[k],U[k][1:m],Q,R,xf) + 4/6*ℓ(xm,um[1:m],Q,R,xf) + 1/6*ℓ(X[k+1],U[k+1][1:m],Q,R,xf)) # Simpson quadrature (integral approximation) for foh stage cost
-            solver.opts.minimum_time ? J += solver.opts.R_minimum_time*dt : nothing
-            solver.opts.infeasible ? J += 0.5*solver.opts.R_infeasible*U[k][m̄.+(1:n)]'*U[k][m̄.+(1:n)] : nothing
-        else
-            J += dt*stage_cost(X[k],U[k],Q,getR(solver),xf,obj.c)
-            # J += dt*ℓ(X[k],U[k][1:m],Q,R,xf)
-            # solver.opts.minimum_time ? J += solver.opts.R_minimum_time*dt : nothing
-            # solver.opts.infeasible ? J += 0.5*solver.opts.R_infeasible*U[k][m̄.+(1:n)]'*U[k][m̄.+(1:n)] : nothing
-        end
-    end
-
-    J += 0.5*(X[N] - xf)'*Qf*(X[N] - xf)
-
-    return J
-end
-
-""" $(SIGNATURES) Compute the Constraints Cost """
 function cost_constraints(solver::Solver, res::ConstrainedIterResults)
     N = solver.N
     J = 0.0
@@ -191,13 +115,7 @@ function cost_constraints(solver::Solver, res::UnconstrainedIterResults)
 end
 
 function cost(solver::Solver, res::SolverIterResults, X=res.X, U=res.U)
-if solver.opts.sat_att==false
     _cost(solver,res,X,U) + cost_constraints(solver,res)
-elseif solver.opts.sat_att==true
-    _cost_sat_att(solver,res,X,U) + cost_constraints(solver,res)
-else
-    print("Could not resolve sat_att Boolean")
-end
 end
 
 """
@@ -457,25 +375,4 @@ function max_penalty(res::ConstrainedIterResults)
     return val
 end
 
-
-function qrot(q,r)
-      r + 2*cross(q[2:4],cross(q[2:4],r) + q[1]*r)
-end
-
-function qmult(q1,q2)
-      [q1[1]*q2[1] - q1[2:4]'*q2[2:4]; q1[1]*q2[2:4] + q2[1]*q1[2:4] + cross(q1[2:4],q2[2:4])]
-end
-
-function q_inv(q)
-    [q[1]; -q[2:4]]
-end
-
-function q_log(q)
-    q[1]*q[2:4]
-end
-
-function hat(x)
-    [  0   -x[3]  x[2]
-         x[3]   0   -x[1]
-        -x[2]  x[1]  0];
-end
+max_penalty(res::UnconstrainedIterResults) = 0

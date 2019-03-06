@@ -76,6 +76,22 @@ export
     reset,
     reset_evals
 
+#attitude simulation
+export
+    attitude_simulation,
+    attitude_lqr,
+    rk4,
+    f_augmented!,
+    f_augmented,
+    qrot,
+    qmult,
+    q_inv,
+    q_log,
+    hat,
+    rk3,
+    interpolate_trajectory,
+    interpolate_rows
+
 include("objective.jl")
 include("model.jl")
 include("integration.jl")
@@ -97,6 +113,7 @@ include("dynamics.jl")
 include("logger.jl")
 include("controller.jl")
 include("partitioning.jl")
+include("attitude_controller.jl")
 
 using Ipopt
 
