@@ -2,125 +2,231 @@ import Base: show, copy
 
 """
 $(TYPEDEF)
-Specifies options for Solver.
+    options for Solver
 """
 mutable struct SolverOptions
-    constrained::Bool
-    minimum_time::Bool
-    infeasible::Bool
+    ###################
+    ## Functionality ##
+    ###################
+    verbose::Bool # Display solve statistics at each iteration
+    benchmark::Bool # Run benchmarks on forward and backward passes
+    live_plotting::Bool # Plot state and control trajectories during solve
 
-    "Determine if satellite attiude format"
-    sat_att::Bool
+    ##########################
+    ## Convergence Criteria ##
+    ##########################
+    cost_tolerance::Float64 # dJ < ϵ, cost convergence criteria for unconstrained solve or to enter outerloop for constrained solve
+    cost_tolerance_intermediate::Float64 # dJ < ϵ_int, intermediate cost convergence criteria to enter outerloop of constrained solve
+    constraint_tolerance::Float64 # max(constraint) < ϵ, constraint convergence criteria
+    constraint_tolerance_intermediate::Float64 # max(constraint) < ϵ_int, intermediate constraint convergence criteria
+    constraint_tolerance_infeasible::Float64  # infeasible control constraint tolerance
+    gradient_norm_tolerance::Float64 # gradient_norm < ϵ, gradient norm convergence criteria
+    gradient_norm_tolerance_intermediate::Float64 # gradient_norm_int < ϵ, gradient norm intermediate convergence criteria
+    gradient_type::Symbol # type of gradient to evaluate: Augmented Lagrangian ∂L/∂u :AuLa, feedfoward Σ|d|^2 :feedforward, Todorov normalized feedforward :todorov
 
-    "Use cholesky decomposition of the cost-to-go Hessian"
-    square_root::Bool
-    "Display statistics at each iteration"
-    verbose::Bool
+    ######################
+    ## Solve Parameters ##
+    ######################
+    iterations::Int64 # caps cumulative number of iLQR iterations (see iterations_innerloop, iterations_outerloop)
+    dJ_counter_limit::Int64 # restricts the total number of times a forward pass fails, resulting in regularization, before entering an outerloop update
 
-    "lower bound for forward pass line search, 0 < z_min < z_max"
-    z_min::Float64
-    "upper bound for forward pass line search, 0 < z_min < z_max < Inf"
-    z_max::Float64
+    ###################
+    ## Iterative LQR ##
+    ###################
+    square_root::Bool # use square root method backward pass for numerical conditioning
+    iterations_innerloop::Int64 # maximum iterations for inner loop (iLQR)
+    line_search_lower_bound::Float64 # forward pass approximate line search lower bound, 0 < line_search_lower_bound < line_search_upper_bound
+    line_search_upper_bound::Float64 # forward pass approximate line search upper bound, 0 < line_search_lower_bound < line_search_upper_bound < Inf
+    iterations_linesearch::Int64 # maximum number of backtracking steps during forward pass line search
 
-    "max cost value"
-    max_cost::Float64
-    "max state value"
-    max_state_value::Float64
-    "max control value"
-    max_control_value::Float64
-    "maximum allowable dt"
-    max_dt::Float64
-    "minimum allowable dt"
-    min_dt::Float64
-    "initial guess for the length of the minimum time problem (in seconds)"
-    minimum_time_tf_estimate::Float64
-    "initial guess for dt of the minimum time problem (in seconds)"
-    minimum_time_dt_estimate::Float64
-
-    "gradient exit criteria"
-    gradient_tolerance::Float64
-
-    "gradient Intermediate exit criteria"
-    gradient_intermediate_tolerance::Float64
-
-    "final cost convergence criteria"
-    cost_tolerance::Float64
-    "intermediate cost convergence criteria for outerloop of constrained solve"
-    cost_intermediate_tolerance::Float64
-    "maximum constraint violation termination criteria"
-    constraint_tolerance::Float64
-    "iterations (total)"
-    iterations::Int64
-    "iterations inner loop (iLQR loops)"
-    iterations_innerloop::Int64
-    "iterations for outer loop of constraint solve"
-    iterations_outerloop::Int64
-    "maximum number of backtracking steps during forward pass line search"
-    iterations_linesearch::Int64
-
-    "regularization term for augmented controls during infeasible start"
-    R_infeasible::Float64
-    "regularization term in R matrix for dt"
-    R_minimum_time::Float64
-
-    "Run benchmarks on forward and backward passes"
-    benchmark::Bool
-
-    "Pass infeasible trajectory solution to original problem"
-    unconstrained_original_problem::Bool
-    resolve_feasible::Bool # resolve feasible problem post infeasible solve
-
-    "Augmented Lagrangian Method parameters" # terms defined in Practical Augmented Lagrangian Methods for Constrained Optimization
-    λ_min::Float64 # minimum Lagrange multiplier
-    λ_max::Float64 # maximum Lagrange multiplier
-    μ_max::Float64 # maximum penalty term
-    μ_initial::Float64 # initial penalty term
-    μ_initial_infeasible::Float64 # initial penalty term for infeasible controls
-    μ_initial_minimum_time_inequality::Float64 # initial penalty term for minimum time bounds constraints
-    μ_initial_minimum_time_equality::Float64 # initial penalty term for minimum time equality constraints
-    γ::Float64 # penalty update multiplier; γ > 0
-    γ_infeasible::Float64 # penalty update rate for infeasible controls
-    γ_minimum_time_inequality::Float64 # penalty update rate for minimum time bounds constraints
-    γ_minimum_time_equality::Float64 # penalty update rate for minimum time equality constraints
-    γ_no::Float64 # penalty update multiplier when μ should not be update, typically 1.0 (or 1.0 + ϵ)
-    τ::Float64 # update term; 0 < τ < 1
-    outer_loop_update::Symbol # type of outer loop update (default, individual)
-    λ_second_order_update::Bool # second order update for Lagrange multipliers once sqrt(cost tolerance | gradient) < desired tolerance
-
-    "Regularization parameters"
-    ρ_initial::Float64 # initial regularization
-    ρ_factor::Float64 # scaling factor
-    ρ_max::Float64 # maximum regularization value
-    ρ_min::Float64 # minimum regularization value
-    regularization_type::Symbol # type of regularization- control: () + ρI, state: (S + ρI); see "Synthesis and Stabilization of Complex Behaviors through Online Trajectory Optimization"
-    ρ_forwardpass::Float64 # multiplicative regularization scaling when forward pass reaches max iterations
+    # Regularization
+    bp_reg_initial::Float64 # initial regularization
+    bp_reg_increase_factor::Float64 # regularization scaling factor
+    bp_reg_max::Float64 # maximum regularization value
+    bp_reg_min::Float64 # minimum regularization value
+    bp_reg_type::Symbol # type of regularization- control: () + ρI, state: (S + ρI); see "Synthesis and Stabilization of Complex Behaviors through Online Trajectory Optimization"
+    bp_reg_fp::Float64 # additive regularization when forward pass reaches max iterations
     eigenvalue_scaling::Float64 # add this multiple of the magnitude of the most negative eigenvalue to Quu decomposition to make positive definite
     eigenvalue_threshold::Float64 # eigenvalues less than this threshold will be increased using the additive eigenvalue scaling
-    use_static::Bool
+    bp_sqrt_inv_type::Symbol # type of fix for potential inverse failure, :pseudo -pseudo inverse of Wxx, :reg - regularize Wxx to make invertible
+    bp_reg_sqrt_initial::Float64 # initial regularization for square root method
+    bp_reg_sqrt_increase_factor::Float64 # regularization scaling factor for square root method
 
-    live_plotting::Bool
+    ##########################
+    ## Augmented Lagrangian ##
+    ##########################
+    iterations_outerloop::Int64 # maximum outerloop updates
+    dual_min::Float64 # minimum Lagrange multiplier
+    dual_max::Float64 # maximum Lagrange multiplier
+    penalty_max::Float64 # maximum penalty term
+    penalty_initial::Float64 # initial penalty term
+    penalty_scaling::Float64 # penalty update multiplier; penalty_scaling > 0
+    penalty_scaling_no::Float64 # penalty update multiplier when μ should not be update, typically 1.0 (or 1.0 + ϵ)
+    constraint_decrease_ratio::Float64 # update term; 0 < constraint_decrease_ratio < 1
+    outer_loop_update_type::Symbol # type of outer loop update (default, momentum, individual, accelerated)
+    use_second_order_dual_update::Bool # second order update for Lagrange multipliers once sqrt(cost tolerance | gradient) < desired tolerance
+    penalty_update_frequency::Int  # determines how many iterations should pass before the penalty is updated (1 is every iteration)
+    constraint_tolerance_second_order_dual_update::Float64 # constraint tolerance for switching to second order dual update
+    active_constraint_tolerance::Float64 # numerical tolerance for constraint violation
+    use_nesterov::Bool # accelerated gradient descent for dual variables
+    use_penalty_burnin::Bool # perform only penalty updates (no dual updates) until constraint_tolerance_intermediate < ϵ_int
+    al_type::Symbol  # [:default, :algencan] pick which Augmented Lagrangian formulation to use. ALGENCAN uses a slightly different check for inactive constraints.
 
-    "Active Set Method parameters"
-    active_set::Bool
-    active_set_flag::Bool
-    active_set_tolerance::Float64
-    active_constraint_tolerance::Float64
+    ######################
+    ## Infeasible Start ##
+    ######################
+    R_infeasible::Float64 # regularization term for infeasible controls
+    resolve_feasible::Bool # resolve feasible problem after infeasible solve
+    feasible_projection::Bool # project infeasible solution into feasible space w/ BP, rollout
+    penalty_initial_infeasible::Float64 # initial penalty term for infeasible controls
+    penalty_scaling_infeasible::Float64 # penalty update rate for infeasible controls
 
+    ##################
+    ## Minimum Time ##
+    ##################
+    R_minimum_time::Float64 # regularization term for dt
+    max_dt::Float64 # maximum allowable dt
+    min_dt::Float64 # minimum allowable dt
+    minimum_time_tf_estimate::Float64 # initial guess for the length of the minimum time problem (in seconds)
+    minimum_time_dt_estimate::Float64 # initial guess for dt of the minimum time problem (in seconds)
+    penalty_initial_minimum_time_inequality::Float64 # initial penalty term for minimum time bounds constraints
+    penalty_initial_minimum_time_equality::Float64 # initial penalty term for minimum time equality constraints
+    penalty_scaling_minimum_time_inequality::Float64 # penalty update rate for minimum time bounds constraints
+    penalty_scaling_minimum_time_equality::Float64 # penalty update rate for minimum time equality constraints
 
-    function SolverOptions(;constrained=false,minimum_time=false,infeasible=false,sat_att=false,square_root=false,verbose=false,
-        z_min=1.0e-8,z_max=10.0,max_cost=1.0e8,max_state_value=1.0e8,max_control_value=1.0e8,max_dt=1.0,min_dt=1e-3,minimum_time_tf_estimate=0.0,minimum_time_dt_estimate=0.0,gradient_tolerance=1e-5,gradient_intermediate_tolerance=1e-5,cost_tolerance=1.0e-4,cost_intermediate_tolerance=1.0e-3,
-        constraint_tolerance=1e-3,iterations=500,iterations_innerloop=150,iterations_outerloop=50,
-        iterations_linesearch=15,R_infeasible=1e3,R_minimum_time=1.0e3,
-        benchmark=false,unconstrained_original_problem=false,resolve_feasible=true,λ_min=-1.0e8,λ_max=1.0e8,μ_max=1.0e8,μ_initial=1.0,μ_initial_infeasible=1.0,μ_initial_minimum_time_inequality=1.0,μ_initial_minimum_time_equality=1.0,γ=10.0,γ_infeasible=10.0,γ_minimum_time_inequality=10.0,γ_minimum_time_equality=10.0,γ_no=1.0,τ=0.25,outer_loop_update=:default,λ_second_order_update=false,
-        ρ_initial=0.0,ρ_factor=1.6,ρ_max=1.0e8,ρ_min=1e-6,regularization_type=:state,ρ_forwardpass=10.0,eigenvalue_scaling=2.0,eigenvalue_threshold=1e-8,use_static=false,live_plotting=false,active_set=false,active_set_flag=false,active_set_tolerance=1e-8,active_constraint_tolerance=1e-8)
+    #############################
+    ## Solver Numerical Limits ##
+    #############################
+    max_cost_value::Float64 # maximum cost value, if exceded solve will error
+    max_state_value::Float64 # maximum state value, evaluated during rollout, if exceded solve will error
+    max_control_value::Float64 # maximum control value, evaluated during rollout, if exceded solve will error
 
-        new(constrained,minimum_time,infeasible,sat_att,square_root,verbose,z_min,z_max,max_cost,max_state_value,max_control_value,max_dt,min_dt,minimum_time_tf_estimate,minimum_time_dt_estimate,gradient_tolerance,gradient_intermediate_tolerance,cost_tolerance,cost_intermediate_tolerance,
-        constraint_tolerance,iterations,iterations_innerloop,iterations_outerloop,
-        iterations_linesearch,R_infeasible,R_minimum_time,
-        benchmark,unconstrained_original_problem,resolve_feasible,
-        λ_min,λ_max,μ_max,μ_initial,μ_initial_infeasible,μ_initial_minimum_time_inequality,μ_initial_minimum_time_equality,γ,γ_infeasible,γ_minimum_time_inequality,γ_minimum_time_equality,γ_no,τ,outer_loop_update,λ_second_order_update,ρ_initial,ρ_factor,ρ_max,ρ_min,regularization_type,ρ_forwardpass,eigenvalue_scaling,eigenvalue_threshold,
-        use_static,live_plotting,active_set,active_set_flag,active_set_tolerance,active_constraint_tolerance)
+    function SolverOptions(;verbose=false,benchmark=false,
+        live_plotting=false,
+        cost_tolerance=1.0e-4,
+        cost_tolerance_intermediate=1.0e-3,
+        constraint_tolerance=1.0e-3,
+        constraint_tolerance_intermediate=sqrt(constraint_tolerance),
+        constraint_tolerance_infeasible=1.0e-5,
+        gradient_norm_tolerance=1.0e-5,
+        gradient_norm_tolerance_intermediate=1.0e-5,
+        gradient_type=:todorov,
+        iterations=500,
+        dJ_counter_limit=10,
+        square_root=false,
+        iterations_innerloop=250,
+        line_search_lower_bound=1.0e-8,
+        line_search_upper_bound=10.0,
+        iterations_linesearch=20,
+        bp_reg_initial=0.0,
+        bp_reg_increase_factor=1.6,
+        bp_reg_max=1.0e8,
+        bp_reg_min=1.0e-8,
+        bp_reg_type=:control,
+        bp_reg_fp=10.0,
+        eigenvalue_scaling=2.0,
+        eigenvalue_threshold=1e-8,
+        bp_sqrt_inv_type=:pseudo,
+        bp_reg_sqrt_initial=1.0e-6,
+        bp_reg_sqrt_increase_factor=10.0,
+        iterations_outerloop=30,
+        dual_min=-1.0e8,
+        dual_max=1.0e8,
+        penalty_max=1.0e8,
+        penalty_initial=1.0,
+        penalty_scaling=10.0,
+        penalty_scaling_no=1.0,
+        constraint_decrease_ratio=0.25,
+        outer_loop_update_type=:default,
+        use_second_order_dual_update=false,
+        penalty_update_frequency=1,
+        constraint_tolerance_second_order_dual_update=sqrt(constraint_tolerance),
+        active_constraint_tolerance=0.0,
+        use_nesterov=false,
+        use_penalty_burnin=false,
+        al_type=:default,
+        R_infeasible=1.0,
+        resolve_feasible=true,
+        feasible_projection=true,
+        penalty_initial_infeasible=1.0,
+        penalty_scaling_infeasible=10.0,
+        R_minimum_time=1.0,
+        max_dt=1.0,
+        min_dt=1.0e-3,
+        minimum_time_tf_estimate=0.0,
+        minimum_time_dt_estimate=0.0,
+        penalty_initial_minimum_time_inequality=1.0,
+        penalty_initial_minimum_time_equality=1.0,
+        penalty_scaling_minimum_time_inequality=1.0,
+        penalty_scaling_minimum_time_equality=1.0,
+        max_cost_value=1.0e8,
+        max_state_value=1.0e8,
+        max_control_value=1.0e8)
+
+        new(verbose,
+            benchmark,
+            live_plotting,
+            cost_tolerance,
+            cost_tolerance_intermediate,
+            constraint_tolerance,
+            constraint_tolerance_intermediate,
+            constraint_tolerance_infeasible,
+            gradient_norm_tolerance,
+            gradient_norm_tolerance_intermediate,
+            gradient_type,
+            iterations,
+            dJ_counter_limit,
+            square_root,
+            iterations_innerloop,
+            line_search_lower_bound,
+            line_search_upper_bound,
+            iterations_linesearch,
+            bp_reg_initial,
+            bp_reg_increase_factor,
+            bp_reg_max,
+            bp_reg_min,
+            bp_reg_type,
+            bp_reg_fp,
+            eigenvalue_scaling,
+            eigenvalue_threshold,
+            bp_sqrt_inv_type,
+            bp_reg_sqrt_initial,
+            bp_reg_sqrt_increase_factor,
+            iterations_outerloop,
+            dual_min,
+            dual_max,
+            penalty_max,
+            penalty_initial,
+            penalty_scaling,
+            penalty_scaling_no,
+            constraint_decrease_ratio,
+            outer_loop_update_type,
+            use_second_order_dual_update,
+            penalty_update_frequency,
+            constraint_tolerance_second_order_dual_update,
+            active_constraint_tolerance,
+            use_nesterov,
+            use_penalty_burnin,
+            al_type,
+            R_infeasible,
+            resolve_feasible,
+            feasible_projection,
+            penalty_initial_infeasible,
+            penalty_scaling_infeasible,
+            R_minimum_time,
+            max_dt,
+            min_dt,
+            minimum_time_tf_estimate,
+            minimum_time_dt_estimate,
+            penalty_initial_minimum_time_inequality,
+            penalty_initial_minimum_time_equality,
+            penalty_scaling_minimum_time_inequality,
+            penalty_scaling_minimum_time_equality,
+            max_cost_value,
+            max_state_value,
+            max_control_value)
     end
+
 end
 
 copy(opts::SolverOptions) = SolverOptions(;[name=>getfield(opts,name) for name in fieldnames(typeof(opts))]...)
