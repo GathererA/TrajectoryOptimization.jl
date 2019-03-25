@@ -5,6 +5,13 @@ $(TYPEDEF)
     options for Solver
 """
 mutable struct SolverOptions
+
+    ##########################
+    ## Satellite Quaternion ##
+    ##########################
+
+    sat_att::Bool #if this is true, the 4:7 numbers in the state vector are a quaternion
+
     ###################
     ## Functionality ##
     ###################
@@ -101,7 +108,7 @@ mutable struct SolverOptions
     max_state_value::Float64 # maximum state value, evaluated during rollout, if exceded solve will error
     max_control_value::Float64 # maximum control value, evaluated during rollout, if exceded solve will error
 
-    function SolverOptions(;verbose=false,benchmark=false,
+    function SolverOptions(;sat_att=false,verbose=false,benchmark=false,
         live_plotting=false,
         cost_tolerance=1.0e-4,
         cost_tolerance_intermediate=1.0e-3,
@@ -163,7 +170,8 @@ mutable struct SolverOptions
         max_state_value=1.0e8,
         max_control_value=1.0e8)
 
-        new(verbose,
+        new(sat_att,
+            verbose,
             benchmark,
             live_plotting,
             cost_tolerance,

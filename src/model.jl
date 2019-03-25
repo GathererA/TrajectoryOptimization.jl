@@ -18,11 +18,14 @@ struct AnalyticalModel <:Model
     f::Function # continuous dynamics (ie, differential equation)
     n::Int # number of states
     m::Int # number of controls
+    state_error::Function #how to find the error for the rollout
+    exp::Function #expansion function for finding directional derivatives
     evals::Vector{Int}
     info::Dict{Symbol,Any}
 
     # Construct a model from an explicit differential equation
-    function AnalyticalModel(f::Function, n::Int64, m::Int64, d::Dict{Symbol,Any}=Dict{Symbol,Any}())
+    function AnalyticalModel(f::Function, n::Int64, m::Int64,
+         state_error::Function, exp::Function, d::Dict{Symbol,Any}=Dict{Symbol,Any}())
         d[:evals] = 0
         evals = [0,]
         # Make dynamics inplace
@@ -31,7 +34,7 @@ struct AnalyticalModel <:Model
         else
             f! = wrap_inplace(f)
         end
-        new(f!,n,m,evals,d)
+        new(f!,n,m,state_error,exp,evals,d)
     end
 end
 
@@ -39,7 +42,7 @@ end
 
 
 """ $(SIGNATURES) Create a Model given an inplace analytical function for the continuous dynamics with n states and m controls"""
-Model(f::Function, n::Int64, m::Int64, d::Dict{Symbol,Any}=Dict{Symbol,Any}()) = AnalyticalModel(f,n,m,d)
+Model(f::Function, n::Int64, m::Int64, state_error::Function, exp::Function, d::Dict{Symbol,Any}=Dict{Symbol,Any}()) = AnalyticalModel(f,n,m,state_error,exp,d)
 
 
 

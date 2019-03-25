@@ -89,6 +89,5 @@ function forwardpass!(res::SolverIterResults, solver::Solver, Δv::Array,J_prev:
     if J > J_prev
         error("Error: Cost increased during Forward Pass")
     end
-
     return J
 end

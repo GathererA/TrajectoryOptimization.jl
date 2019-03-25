@@ -11,7 +11,17 @@ function pendulum_dynamics!(xdot,x,u)
     xdot[2] = (u[1] - m*g*lc*sin(x[1]) - b*x[2])/I
 end
 n,m = 2,1
-model = Model(pendulum_dynamics!,n,m) # inplace model
+
+#create some empty functions (haven't updated for new model definition)
+function blank_error()
+
+end
+
+function blank_expansion()
+
+end
+
+model = Model(pendulum_dynamics!,n,m,blank_error,blank_expansion) # inplace model
 
 # initial conditions
 x0 = [0; 0.]

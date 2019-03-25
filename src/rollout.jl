@@ -75,11 +75,12 @@ function rollout!(res::SolverVectorResults,solver::Solver,alpha::Float64)
 
     X = res.X; U = res.U; K = res.K; d = res.d; X_ = res.X_; U_ = res.U_
 
+
     X_[1][1:n] = solver.obj.x0;
 
     for k = 2:N
         # Calculate state trajectory difference
-        δx = X_[k-1] - X[k-1]
+        δx = solver.model.state_error(X_[k-1],X[k-1])
 
         # Calculate updated control
         U_[k-1] = U[k-1] + K[k-1]*δx + alpha*d[k-1]
@@ -107,4 +108,38 @@ function rollout!(res::SolverVectorResults,solver::Solver,alpha::Float64)
     update_constraints!(res,solver,X_,U_)
 
     return true
+end
+
+
+function qrot(q,r)
+      r + 2*cross(q[2:4],cross(q[2:4],r) + q[1]*r)
+end
+
+function qmult(q1,q2)
+      [q1[1]*q2[1] - q1[2:4]'*q2[2:4]; q1[1]*q2[2:4] + q2[1]*q1[2:4] + cross(q1[2:4],q2[2:4])]
+end
+
+function q_inv(q)
+    [q[1]; -q[2:4]]
+end
+
+function q_log(q)
+    q[1]*q[2:4]
+end
+
+function hat(x)
+    [  0   -x[3]  x[2]
+         x[3]   0   -x[1]
+        -x[2]  x[1]  0];
+end
+
+function L_decomp(q)
+    #this function takes in a desired quaternion computes the L decomposition
+    L = [q[1] -q[2] -q[3] -q[4];
+         q[2] q[1] -q[4] q[3];
+         q[3] q[4] q[1] -q[2];
+         q[4] -q[3] q[2] q[1]]
+
+         return L
+
 end

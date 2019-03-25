@@ -61,8 +61,45 @@ function taylor_expansion(cost::QuadraticCost, x::AbstractVector{Float64}, u::Ab
     return cost.Q, cost.R, cost.H, cost.Q*x + cost.q, cost.R*u[1:m] + cost.r
 end
 
+function quaternion_expansion(cost::QuadraticCost, x::AbstractVector{Float64}, u::AbstractVector{Float64})
+    #renormalize for quaternion
+    qk = x
+    sk = qk[4]
+    vk = qk[5:7]
+
+    qn = x
+    sn = qn[4]
+    vn = qn[5:7]
+
+    Gk = [-vk'; sk*Array(1.0*Diagonal(I,3)) + hat(vk)]
+    Gn = [-vn'; sn*Array(1.0*Diagonal(I,3)) + hat(vn)]
+
+    #recompute A and B matrices through permutation matrices
+    perm_Gn = zeros(7,8)
+    perm_Gk = zeros(8,7)
+    perm_Gn[1:3,1:3]= Array(1.0*Diagonal(I,3))
+    perm_Gn[4:6,4:7] = Gn'
+    perm_Gk[1:3,1:3]= Array(1.0*Diagonal(I,3))
+    perm_Gk[4:7,4:6] = Gk
+    return perm_Gn*cost.Q*perm_Gk, cost.R, cost.H*perm_Gk, perm_Gn*(cost.Q*x+cost.q), cost.R*u+ cost.r
+end
+
 function taylor_expansion(cost::QuadraticCost, xN::AbstractVector{Float64})
     return cost.Qf, cost.Qf*xN + cost.qf
+end
+
+function quaternion_expansion(cost::QuadraticCost, xN::AbstractVector{Float64})
+    #renormalize for quaternion at boundary
+    qn = xN
+    sn = qn[4]
+    vn = qn[5:7]
+
+    Gn = [-vn'; sn*Array(1.0*Diagonal(I,3)) + hat(vn)]
+    perm_Gn = zeros(7,8)
+    perm_Gn[1:3,1:3]= Array(1.0*Diagonal(I,3))
+    perm_Gn[4:6,4:7] = Gn'
+
+    return perm_Gn*cost.Qf*perm_Gn', perm_Gn*(cost.Qf*xN+cost.qf)
 end
 
 gradient(cost::QuadraticCost, x::AbstractVector{Float64}, u::AbstractVector{Float64}) = cost.Q*x + cost.q, cost.R*u + cost.r
@@ -108,7 +145,7 @@ Create a Generic Cost, specifying the gradient and hessian of the cost function 
     Qf = hess(xN) with size (n,n)
 * grad: multiple-dispatch function of the form,
     q,r = grad(x,u) with sizes (n,), (m,)
-    qf = grad(x,u) with size (n,)
+    qf = grad(xN) with size (n,)
 
 """
 function GenericCost(ℓ::Function, ℓf::Function, grad::Function, hess::Function, n::Int, m::Int)
@@ -182,6 +219,46 @@ end
 function taylor_expansion(cost::GenericCost, xN::AbstractVector{Float64})
     cost.expansion(xN)
 end
+
+function quaternion_expansion(cost::GenericCost, x::AbstractVector{Float64}, u::AbstractVector{Float64})
+    Q,R,H,q,r = cost.expansion(x,u)
+    #renormalize for quaternion
+    qk = x
+    sk = qk[4]
+    vk = qk[5:7]
+
+    qn = x
+    sn = qn[4]
+    vn = qn[5:7]
+
+    Gk = [-vk'; sk*Array(1.0*Diagonal(I,3)) + hat(vk)]
+    Gn = [-vn'; sn*Array(1.0*Diagonal(I,3)) + hat(vn)]
+
+    #recompute A and B matrices through permutation matrices
+    perm_Gn = zeros(7,8)
+    perm_Gk = zeros(8,7)
+    perm_Gn[1:3,1:3]= Array(1.0*Diagonal(I,3))
+    perm_Gn[4:6,4:7] = Gn'
+    perm_Gk[1:3,1:3]= Array(1.0*Diagonal(I,3))
+    perm_Gk[4:7,4:6] = Gk
+    return perm_Gn*Q*perm_Gk, R, H*perm_Gk, perm_Gn*(Q*x+q), R*u+ r
+end
+
+function quaternion_expansion(cost::GenericCost, xN::AbstractVector{Float64})
+    Qf, qf = cost.expansion(xN)
+    #renormalize for quaternion at boundary
+    qn = xN
+    sn = qn[4]
+    vn = qn[5:7]
+
+    Gn = [-vn'; sn*Array(1.0*Diagonal(I,3)) + hat(vn)]
+    perm_Gn = zeros(7,8)
+    perm_Gn[1:3,1:3]= Array(1.0*Diagonal(I,3))
+    perm_Gn[4:6,4:7] = Gn'
+
+    return perm_Gn*Qf*perm_Gn', perm_Gn*(Qf*xN+qf)
+end
+
 
 # TODO: Split gradient and hessian calculations
 

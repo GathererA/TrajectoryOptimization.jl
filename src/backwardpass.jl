@@ -42,7 +42,7 @@ function _backwardpass!(res::SolverVectorResults,solver::Solver)
     end
 
     # Boundary Conditions
-    S[N][1:n,1:n], s[N][1:n] = taylor_expansion(costfun, X[N][1:n])
+    S[N], s[N] = quaternion_expansion(costfun, X[N])
 
     if solver.state.minimum_time
         s[N][n̄] = R_minimum_time*X[N][n̄]
@@ -69,8 +69,13 @@ function _backwardpass!(res::SolverVectorResults,solver::Solver)
         x = X[k][1:n]
         u = U[k][1:m]
 
-        expansion = taylor_expansion(costfun,x,u)
-        Qxx[k][1:n,1:n],Quu[k][1:m,1:m],Qux[k][1:m,1:n],Qx[k][1:n],Qu[k][1:m] = expansion .* dt
+        if solver.opts.sat_att == true
+            expansion = quaternion_expansion(costfun,x,u)
+            Qxx[k],Quu[k],Qux[k],Qx[k],Qu[k] = expansion .* dt
+        else
+            expansion = taylor_expansion(costfun,x,u)
+            Qxx[k][1:n,1:n],Quu[k][1:m,1:m],Qux[k][1:m,1:n],Qx[k][1:n],Qu[k][1:m] = expansion .* dt
+        end
 
         # Minimum time expansion components
         if solver.state.minimum_time
@@ -97,6 +102,31 @@ function _backwardpass!(res::SolverVectorResults,solver::Solver)
         # Compute gradients of the dynamics
         fdx, fdu = res.fdx[k], res.fdu[k]
 
+        if solver.opts.sat_att == true
+            #renormalize for quaternion
+            qk = X[k]
+            sk = qk[4]
+            vk = qk[5:7]
+
+            qn = X[k+1]
+            sn = qn[4]
+            vn = qn[5:7]
+
+            Gk = [-vk'; sk*Array(1.0*Diagonal(I,3)) + hat(vk)]
+            Gn = [-vn'; sn*Array(1.0*Diagonal(I,3)) + hat(vn)]
+
+            #recompute A and B matrices through permutation matrices
+            perm_Gn = zeros(7,8)
+            perm_Gk = zeros(8,7)
+            perm_Gn[1:3,1:3]= Array(1.0*Diagonal(I,3))
+            perm_Gn[4:6,4:7] = Gn'
+            perm_Gk[1:3,1:3]= Array(1.0*Diagonal(I,3))
+            perm_Gk[4:7,4:6] = Gk
+
+            fdx = perm_Gn*fdx*perm_Gk
+            fdu = perm_Gn*fdu
+        end
+
         # Gradients and Hessians of Taylor Series Expansion of Q
         Qx[k] += fdx'*s[k+1]
         Qu[k] += fdu'*s[k+1]
@@ -104,14 +134,14 @@ function _backwardpass!(res::SolverVectorResults,solver::Solver)
         Quu[k] += fdu'*S[k+1]*fdu
         Qux[k] += fdu'*S[k+1]*fdx
 
-        # Constraints
-        if res isa ConstrainedIterResults
-            Qx[k] += Cx[k]'*(Iμ[k]*C[k] + λ[k])
-            Qu[k] += Cu[k]'*(Iμ[k]*C[k] + λ[k])
-            Qxx[k] += Cx[k]'*Iμ[k]*Cx[k]
-            Quu[k] += Cu[k]'*Iμ[k]*Cu[k]
-            Qux[k] += Cu[k]'*Iμ[k]*Cx[k]
-        end
+        # # Constraints
+        # if res isa ConstrainedIterResults
+        #     Qx[k] += Cx[k]'*(Iμ[k]*C[k] + λ[k])
+        #     Qu[k] += Cu[k]'*(Iμ[k]*C[k] + λ[k])
+        #     Qxx[k] += Cx[k]'*Iμ[k]*Cx[k]
+        #     Quu[k] += Cu[k]'*Iμ[k]*Cu[k]
+        #     Qux[k] += Cu[k]'*Iμ[k]*Cx[k]
+        # end
 
         if solver.opts.bp_reg_type == :state
             Quu_reg[k] = Quu[k] + res.ρ[1]*fdu'*fdu
@@ -139,9 +169,11 @@ function _backwardpass!(res::SolverVectorResults,solver::Solver)
         d[k] = -Quu_reg[k]\Qu[k]
 
         # Calculate cost-to-go (using unregularized Quu and Qux)
-        s[k] = Qx[k] + K[k]'*Quu[k]*d[k] + K[k]'*Qu[k] + Qux[k]'*d[k]
-        S[k] = Qxx[k] + K[k]'*Quu[k]*K[k] + K[k]'*Qux[k] + Qux[k]'*K[k]
+        s[k] = (Qx[k] + K[k]'*Quu[k]*d[k] + K[k]'*Qu[k] + Qux[k]'*d[k])
+        S[k] = (Qxx[k] + K[k]'*Quu[k]*K[k] +
+         K[k]'*Qux[k] + Qux[k]'*K[k])
         S[k] = 0.5*(S[k] + S[k]')
+
 
         # calculated change is cost-to-go over entire trajectory
         Δv[1] += d[k]'*Qu[k]
@@ -156,101 +188,6 @@ function _backwardpass!(res::SolverVectorResults,solver::Solver)
     return Δv
 end
 
-function _backwardpass_new!(res::SolverVectorResults,solver::Solver)
-    # Get problem sizes
-    n,m,N = get_sizes(solver)
-    m̄,mm = get_num_controls(solver)
-    n̄,nn = get_num_states(solver)
-
-    # Objective
-    costfun = solver.obj.cost
-
-    # Minimum time and infeasible options
-    solver.state.minimum_time ? R_minimum_time = solver.opts.R_minimum_time : nothing
-    solver.state.infeasible ? R_infeasible = solver.opts.R_infeasible*Matrix(I,n,n) : nothing
-
-    dt = solver.dt
-
-    X = res.X; U = res.U; K = res.K; d = res.d; S = res.S; s = res.s
-
-    Qx = res.bp.Qx; Qu = res.bp.Qu; Qxx = res.bp.Qxx; Quu = res.bp.Quu; Qux = res.bp.Qux
-    Quu_reg = res.bp.Quu_reg; Qux_reg = res.bp.Qux_reg
-
-    # TEMP resets values for now - this will get fixed
-    for k = 1:N-1
-        Qx[k] = zeros(nn); Qu[k] = zeros(mm); Qxx[k] = zeros(nn,nn); Quu[k] = zeros(mm,mm); Qux[k] = zeros(mm,nn)
-        Quu_reg[k] = zeros(mm,mm); Qux_reg[k] = zeros(mm,nn)
-    end
-
-    # Boundary Conditions
-    al_expansion!(res,solver,N)
-    S[N][1:n,1:n], s[N][1:n] = Qxx[N][1:n,1:n], Qx[N][1:n]
-
-    # Initialize expected change in cost-to-go
-    Δv = zeros(2)
-
-    # Backward pass
-    k = N-1
-    while k >= 1
-        solver.state.minimum_time ? dt = U[k][m̄]^2 : nothing
-
-        x = X[k][1:n]
-        u = U[k][1:m]
-
-        al_expansion!(res,solver,k)
-
-        # Compute gradients of the dynamics
-        fdx, fdu = res.fdx[k], res.fdu[k]
-
-        # Gradients and Hessians of Taylor Series Expansion of Q
-        Qx[k] += fdx'*s[k+1]
-        Qu[k] += fdu'*s[k+1]
-        Qxx[k] += fdx'*S[k+1]*fdx
-        Quu[k] += fdu'*S[k+1]*fdu
-        Qux[k] += fdu'*S[k+1]*fdx
-
-        if solver.opts.bp_reg_type == :state
-            Quu_reg[k] = Quu[k] + res.ρ[1]*fdu'*fdu
-            Qux_reg[k] = Qux[k] + res.ρ[1]*fdu'*fdx
-        elseif solver.opts.bp_reg_type == :control
-            Quu_reg[k] = Quu[k] + res.ρ[1]*I
-            Qux_reg[k] = Qux[k]
-        end
-
-        # Regularization
-        if !isposdef(Hermitian(Array(Quu_reg[k])))  # need to wrap Array since isposdef doesn't work for static arrays
-            # increase regularization
-            @logmsg InnerIters "Regularizing Quu "
-            regularization_update!(res,solver,:increase)
-
-            # reset backward pass
-            k = N-1
-            Δv[1] = 0.
-            Δv[2] = 0.
-            continue
-        end
-
-        # Compute gains
-        K[k] = -Quu_reg[k]\Qux_reg[k]
-        d[k] = -Quu_reg[k]\Qu[k]
-
-        # Calculate cost-to-go (using unregularized Quu and Qux)
-        s[k] = Qx[k] + K[k]'*Quu[k]*d[k] + K[k]'*Qu[k] + Qux[k]'*d[k]
-        S[k] = Qxx[k] + K[k]'*Quu[k]*K[k] + K[k]'*Qux[k] + Qux[k]'*K[k]
-        S[k] = 0.5*(S[k] + S[k]')
-
-        # calculated change is cost-to-go over entire trajectory
-        Δv[1] += d[k]'*Qu[k]
-        Δv[2] += 0.5*d[k]'*Quu[k]*d[k]
-
-        k = k - 1;
-    end
-
-    # decrease regularization after backward pass
-    regularization_update!(res,solver,:decrease)
-
-    return Δv
-end
 
 function al_expansion!(res::SolverIterResults, solver::Solver, k::Int)
     X = res.X; U = res.U
@@ -592,4 +529,15 @@ function backwardpass_max_condition_number(results::TrajectoryOptimization.Solve
         end
     end
     return max_cn
+end
+
+function L_decomp(q)
+    #this function takes in a desired quaternion computes the L decomposition
+    L = [q[1] -q[2] -q[3] -q[4];
+         -q[2] q[1] q[4] -q[3];
+         -q[3] -q[4] q[1] q[2];
+         -q[4] q[3] -q[2] q[1]]
+
+         return L
+
 end
